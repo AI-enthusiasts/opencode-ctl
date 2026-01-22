@@ -104,8 +104,15 @@ def touch(session_id: str = typer.Argument(..., help="Session ID to touch")):
 
 @app.command()
 def send(
-    session_id: str = typer.Argument(..., help="Session ID"),
+    session_id: str = typer.Argument(..., help="Session ID (occtl session)"),
     message: str = typer.Argument(..., help="Message to send"),
+    agent: Optional[str] = typer.Option(
+        None, "--agent", "-a", help="Agent to use (e.g., docs-retriever)"
+    ),
+    timeout: float = typer.Option(
+        300.0, "--timeout", "-t", help="Request timeout in seconds"
+    ),
+    raw: bool = typer.Option(False, "--raw", "-r", help="Output raw JSON response"),
 ):
     session = runner.status(session_id)
     if not session:
@@ -119,17 +126,55 @@ def send(
     runner.touch(session_id)
 
     import httpx
+    import json
 
-    url = f"http://localhost:{session.port}"
+    base_url = f"http://localhost:{session.port}"
     try:
-        with httpx.Client(timeout=300.0) as client:
-            resp = client.post(f"{url}/message", json={"content": message})
-            if resp.status_code == 200:
-                data = resp.json()
-                console.print(data.get("response", ""))
-            else:
-                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
+        with httpx.Client(timeout=timeout) as client:
+            create_resp = client.post(f"{base_url}/session", json={})
+            if create_resp.status_code != 200:
+                console.print(
+                    f"[red]Failed to create session:[/red] {create_resp.status_code} {create_resp.text}"
+                )
                 raise typer.Exit(1)
+
+            oc_session = create_resp.json()
+            oc_session_id = oc_session.get("id")
+
+            body = {"parts": [{"type": "text", "text": message}]}
+            if agent:
+                body["agent"] = agent
+
+            with client.stream(
+                "POST",
+                f"{base_url}/session/{oc_session_id}/message",
+                json=body,
+                timeout=timeout,
+            ) as resp:
+                if resp.status_code != 200:
+                    console.print(f"[red]Error:[/red] {resp.status_code}")
+                    raise typer.Exit(1)
+
+                full_response = ""
+                for chunk in resp.iter_text():
+                    full_response += chunk
+
+                if full_response:
+                    try:
+                        data = json.loads(full_response)
+                        if raw:
+                            console.print(json.dumps(data, indent=2))
+                        else:
+                            parts = data.get("parts", [])
+                            for part in parts:
+                                if part.get("type") == "text":
+                                    console.print(part.get("text", ""))
+                    except json.JSONDecodeError:
+                        console.print(full_response)
+
+    except httpx.TimeoutException:
+        console.print(f"[red]Timeout after {timeout}s[/red]")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Failed:[/red] {e}")
         raise typer.Exit(1)
