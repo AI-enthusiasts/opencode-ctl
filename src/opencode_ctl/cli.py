@@ -153,5 +153,129 @@ def attach(session_id: str = typer.Argument(..., help="Session ID to attach")):
     subprocess.run(["opencode", "attach", url])
 
 
+@app.command()
+def permissions(session_id: str = typer.Argument(..., help="Session ID")):
+    """List pending permission requests for a session."""
+    session = runner.status(session_id)
+    if not session:
+        console.print(f"[yellow]Not found:[/yellow] {session_id}")
+        raise typer.Exit(1)
+
+    if session.status != "running":
+        console.print(f"[red]Session not running:[/red] {session.status}")
+        raise typer.Exit(1)
+
+    import httpx
+
+    url = f"http://localhost:{session.port}"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{url}/permission")
+            if resp.status_code == 200:
+                data = resp.json()
+                if not data:
+                    console.print("[dim]No pending permissions[/dim]")
+                    return
+
+                table = Table()
+                table.add_column("ID")
+                table.add_column("Permission")
+                table.add_column("Pattern")
+                table.add_column("Tool")
+
+                for perm in data:
+                    table.add_row(
+                        perm.get("id", ""),
+                        perm.get("permission", ""),
+                        perm.get("pattern", ""),
+                        perm.get("tool", {}).get("name", ""),
+                    )
+                console.print(table)
+            else:
+                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
+                raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Failed:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def approve(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    permission_id: str = typer.Argument(..., help="Permission ID to approve"),
+    always: bool = typer.Option(
+        False, "--always", "-a", help="Always allow this pattern"
+    ),
+):
+    """Approve a pending permission request."""
+    session = runner.status(session_id)
+    if not session:
+        console.print(f"[yellow]Not found:[/yellow] {session_id}")
+        raise typer.Exit(1)
+
+    if session.status != "running":
+        console.print(f"[red]Session not running:[/red] {session.status}")
+        raise typer.Exit(1)
+
+    import httpx
+
+    url = f"http://localhost:{session.port}"
+    reply = "always" if always else "once"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{url}/permission/{permission_id}/reply",
+                json={"reply": reply},
+            )
+            if resp.status_code == 200:
+                console.print(f"[green]Approved ({reply}):[/green] {permission_id}")
+            else:
+                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
+                raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Failed:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def reject(
+    session_id: str = typer.Argument(..., help="Session ID"),
+    permission_id: str = typer.Argument(..., help="Permission ID to reject"),
+    message: Optional[str] = typer.Option(
+        None, "--message", "-m", help="Rejection message"
+    ),
+):
+    """Reject a pending permission request."""
+    session = runner.status(session_id)
+    if not session:
+        console.print(f"[yellow]Not found:[/yellow] {session_id}")
+        raise typer.Exit(1)
+
+    if session.status != "running":
+        console.print(f"[red]Session not running:[/red] {session.status}")
+        raise typer.Exit(1)
+
+    import httpx
+
+    url = f"http://localhost:{session.port}"
+    body = {"reply": "reject"}
+    if message:
+        body["message"] = message
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{url}/permission/{permission_id}/reply",
+                json=body,
+            )
+            if resp.status_code == 200:
+                console.print(f"[yellow]Rejected:[/yellow] {permission_id}")
+            else:
+                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
+                raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Failed:[/red] {e}")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

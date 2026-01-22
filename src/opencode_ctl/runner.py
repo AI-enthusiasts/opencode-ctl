@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -32,14 +32,16 @@ class OpenCodeRunner:
 
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
                 env=env,
                 cwd=cwd,
+                text=True,
             )
 
-            if not self._wait_for_ready(port, timeout):
+            url = self._wait_for_server_url(proc, port, timeout)
+            if not url:
                 proc.terminate()
                 raise RuntimeError(f"OpenCode failed to start on port {port}")
 
@@ -82,8 +84,6 @@ class OpenCodeRunner:
             if not self._is_process_alive(session.pid):
                 session.status = "dead"
                 store.remove_session(session_id)
-            elif not self._is_responsive(session.port):
-                session.status = "unresponsive"
             else:
                 session.status = "running"
 
@@ -131,21 +131,26 @@ class OpenCodeRunner:
                 return True
             return False
 
-    def _wait_for_ready(self, port: int, timeout: float) -> bool:
+    def _wait_for_server_url(
+        self, proc: subprocess.Popen, port: int, timeout: float
+    ) -> Optional[str]:
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._is_responsive(port):
-                return True
-            time.sleep(0.2)
-        return False
+        pattern = re.compile(r"opencode server listening on (https?://[^\s]+)")
 
-    def _is_responsive(self, port: int) -> bool:
-        try:
-            with httpx.Client(timeout=2.0) as client:
-                resp = client.get(f"http://localhost:{port}/health")
-                return resp.status_code == 200
-        except Exception:
-            return False
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return None
+
+            if proc.stdout:
+                line = proc.stdout.readline()
+                if line:
+                    match = pattern.search(line)
+                    if match:
+                        return match.group(1)
+
+            time.sleep(0.1)
+
+        return None
 
     def _is_process_alive(self, pid: int) -> bool:
         try:
