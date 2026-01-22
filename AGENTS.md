@@ -1,89 +1,62 @@
 # Purpose
 
-CLI tool for managing OpenCode sessions programmatically. Encapsulates OpenCode HTTP API for benchmarking and automation.
+CLI tool for managing OpenCode server sessions. Provides programmatic control for automation and benchmarking.
 
-# OpenCode API Reference
-
-Based on analysis of OpenCode repository (packages/opencode/src/server/server.ts):
-
-## Session Management
+# Structure
 
 ```
-POST /session                    - Create session (optional: {title, parentID, permission})
-GET  /session                    - List all sessions
-GET  /session/{id}               - Get session details
-DELETE /session/{id}             - Delete session
-PATCH /session/{id}              - Update session (title, archive)
-```
-
-## Messaging
-
-```
-POST /session/{id}/message       - Send message, streaming response
-                                   Body: {parts: [{type: "text", text: "..."}], agent?, model?}
-POST /session/{id}/prompt_async  - Send message, returns 204 immediately
-POST /session/{id}/command       - Send command
-GET  /session/{id}/message       - Get all messages
-GET  /session/{id}/message/{mid} - Get specific message
-```
-
-**Message body format:**
-```json
-{
-  "parts": [{"type": "text", "text": "Your message here"}],
-  "agent": "docs-retriever"
-}
-```
-
-## Events
-
-```
-GET /global/event                - Server-Sent Events stream for real-time updates
-```
-
-## Other
-
-```
-POST /session/{id}/abort         - Abort active session
-POST /session/{id}/fork          - Fork session at message point
-GET  /permission                 - List pending permissions
-POST /permission/{id}/reply      - Reply to permission (once/always/reject)
+src/opencode_ctl/
+├── client.py   # HTTP client for OpenCode API (low-level)
+├── runner.py   # Session lifecycle management (business logic)
+├── store.py    # Persistence layer (store.json)
+└── cli.py      # CLI interface (typer + rich)
 ```
 
 # Conventions
 
-- Use `httpx` for HTTP client (async-capable, timeout support)
-- Use `typer` for CLI with `rich` for output formatting
-- Use `filelock` for concurrent access to store.json
-- Session IDs: `oc-{uuid[:8]}` format
-- Ports: allocated sequentially from 9100
+## Layering
+- `cli.py` only parses args and formats output, delegates to `runner.py`
+- `runner.py` orchestrates operations, uses `client.py` for HTTP
+- `client.py` handles raw HTTP, knows nothing about occtl sessions
+- `store.py` handles persistence, used only by `runner.py`
 
-# Implementation Notes
+## Data classes
+- Use `@dataclass` for DTOs: `Session`, `SendResult`, `Permission`
+- Exceptions: `SessionNotFoundError`, `SessionNotRunningError`, `OpenCodeClientError`
 
-## Message Sending
+## Session IDs
+- occtl sessions: `oc-{uuid[:8]}` format (e.g., `oc-fd7e7667`)
+- OpenCode sessions: `ses_*` format (internal, from API)
 
-The `/message` endpoint returns streaming JSON. For blocking behavior:
-1. POST to `/session/{id}/message` with `{parts: [{type: "text", text: "..."}], agent?}`
-2. Read streaming response until complete
-3. Parse final JSON for assistant message
+## Ports
+- Allocated sequentially from 9100 via `store.allocate_port()`
+- Stored in `~/.local/share/opencode-ctl/store.json`
 
-## Agent Specification
+## HTTP client
+- Use `httpx` with explicit timeout
+- Streaming responses: use `client.stream()` context manager
 
-Pass `agent` field in message body:
-```json
-{"parts": [{"type": "text", "text": "..."}], "agent": "docs-retriever"}
+## OpenCode API message format
+```python
+body = {"parts": [{"type": "text", "text": message}]}
+if agent:
+    body["agent"] = agent
 ```
-
-## Event Subscription
-
-For real-time updates, connect to `/global/event` (SSE):
-- `message.part.updated` - streaming message updates
-- `session.updated` - session state changes
 
 # Anti-patterns
 
-- Don't use `{text: "..."}` in message body → use `{parts: [{type: "text", text: "..."}]}`
-- Don't POST to `/message` without session ID path param
-- Don't expect JSON from root `/` - it returns HTML (SPA)
-- Don't use `opencode serve` without checking port availability
-- Don't hardcode ports - use store.json allocation
+- Don't put HTTP logic in cli.py → use runner.py
+- Don't use `{text: "..."}` for messages → use `{parts: [{type: "text", text: "..."}]}`
+- Don't hardcode ports → use store.allocate_port()
+- Don't create httpx.Client without timeout
+
+# OpenCode API Reference
+
+Endpoints used by client.py (from OpenCode server):
+
+```
+POST /session                    - Create session
+POST /session/{id}/message       - Send message (streaming response)
+GET  /permission                 - List pending permissions  
+POST /permission/{id}/reply      - Reply: once/always/reject
+```
