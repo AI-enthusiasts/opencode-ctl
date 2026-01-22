@@ -9,9 +9,18 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-import httpx
-
+from .client import OpenCodeClient, OpenCodeClientError, Permission, SendResult
 from .store import Session, TransactionalStore
+
+
+class SessionNotFoundError(Exception):
+    pass
+
+
+class SessionNotRunningError(Exception):
+    def __init__(self, status: str):
+        self.status = status
+        super().__init__(f"Session not running: {status}")
 
 
 class OpenCodeRunner:
@@ -29,6 +38,8 @@ class OpenCodeRunner:
             env["OPENCODE_SESSION_ID"] = session_id
 
             cwd = workdir or os.getcwd()
+            if not os.path.isdir(cwd):
+                raise FileNotFoundError(cwd)
 
             proc = subprocess.Popen(
                 cmd,
@@ -94,9 +105,9 @@ class OpenCodeRunner:
             sessions = []
             dead_ids = []
 
-            for session_id, session in store.sessions.items():
+            for sid, session in store.sessions.items():
                 if not self._is_process_alive(session.pid):
-                    dead_ids.append(session_id)
+                    dead_ids.append(sid)
                 else:
                     sessions.append(session)
 
@@ -110,7 +121,7 @@ class OpenCodeRunner:
         with TransactionalStore() as store:
             now = datetime.now()
 
-            for session_id, session in list(store.sessions.items()):
+            for sid, session in list(store.sessions.items()):
                 last = datetime.fromisoformat(session.last_activity)
                 idle = (now - last).total_seconds()
 
@@ -119,8 +130,8 @@ class OpenCodeRunner:
                         os.kill(session.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-                    store.remove_session(session_id)
-                    stopped.append(session_id)
+                    store.remove_session(sid)
+                    stopped.append(sid)
 
         return stopped
 
@@ -130,6 +141,58 @@ class OpenCodeRunner:
                 store.update_activity(session_id)
                 return True
             return False
+
+    def send(
+        self,
+        session_id: str,
+        message: str,
+        agent: Optional[str] = None,
+        timeout: float = 300.0,
+    ) -> SendResult:
+        session = self._get_running_session(session_id)
+        self.touch(session_id)
+
+        client = OpenCodeClient(f"http://localhost:{session.port}", timeout=timeout)
+        oc_session_id = client.create_session()
+        return client.send_message(oc_session_id, message, agent)
+
+    def list_permissions(self, session_id: str) -> list[Permission]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.list_permissions()
+
+    def approve_permission(
+        self,
+        session_id: str,
+        permission_id: str,
+        always: bool = False,
+    ) -> None:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        reply = "always" if always else "once"
+        client.reply_permission(permission_id, reply)
+
+    def reject_permission(
+        self,
+        session_id: str,
+        permission_id: str,
+        message: Optional[str] = None,
+    ) -> None:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        client.reply_permission(permission_id, "reject", message)
+
+    def get_attach_url(self, session_id: str) -> str:
+        session = self._get_running_session(session_id)
+        return f"http://localhost:{session.port}"
+
+    def _get_running_session(self, session_id: str) -> Session:
+        session = self.status(session_id)
+        if not session:
+            raise SessionNotFoundError(session_id)
+        if session.status != "running":
+            raise SessionNotRunningError(session.status)
+        return session
 
     def _wait_for_server_url(
         self, proc: subprocess.Popen, port: int, timeout: float

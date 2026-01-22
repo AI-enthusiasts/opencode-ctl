@@ -1,14 +1,31 @@
 from typing import Optional
+import json
+import subprocess
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from .runner import OpenCodeRunner
+from .client import OpenCodeClientError
+from .runner import OpenCodeRunner, SessionNotFoundError, SessionNotRunningError
 
 app = typer.Typer(name="occtl", help="OpenCode session lifecycle manager")
 console = Console()
 runner = OpenCodeRunner()
+
+
+def _handle_session_error(e: Exception) -> None:
+    if isinstance(e, SessionNotFoundError):
+        console.print(f"[yellow]Not found:[/yellow] {e}")
+        raise typer.Exit(1)
+    if isinstance(e, SessionNotRunningError):
+        console.print(f"[red]Session not running:[/red] {e.status}")
+        raise typer.Exit(1)
+    if isinstance(e, OpenCodeClientError):
+        console.print(f"[red]Error:[/red] {e.status_code} {e.message}")
+        raise typer.Exit(1)
+    console.print(f"[red]Failed:[/red] {e}")
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -25,6 +42,9 @@ def start(
         console.print(f"[green]Started session:[/green] {session.id}")
         console.print(f"  Port: {session.port}")
         console.print(f"  PID: {session.pid}")
+    except FileNotFoundError as e:
+        console.print(f"[red]Directory not found:[/red] {e}")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Failed to start:[/red] {e}")
         raise typer.Exit(1)
@@ -114,134 +134,46 @@ def send(
     ),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw JSON response"),
 ):
-    session = runner.status(session_id)
-    if not session:
-        console.print(f"[yellow]Not found:[/yellow] {session_id}")
-        raise typer.Exit(1)
-
-    if session.status != "running":
-        console.print(f"[red]Session not running:[/red] {session.status}")
-        raise typer.Exit(1)
-
-    runner.touch(session_id)
-
-    import httpx
-    import json
-
-    base_url = f"http://localhost:{session.port}"
     try:
-        with httpx.Client(timeout=timeout) as client:
-            create_resp = client.post(f"{base_url}/session", json={})
-            if create_resp.status_code != 200:
-                console.print(
-                    f"[red]Failed to create session:[/red] {create_resp.status_code} {create_resp.text}"
-                )
-                raise typer.Exit(1)
-
-            oc_session = create_resp.json()
-            oc_session_id = oc_session.get("id")
-
-            body = {"parts": [{"type": "text", "text": message}]}
-            if agent:
-                body["agent"] = agent
-
-            with client.stream(
-                "POST",
-                f"{base_url}/session/{oc_session_id}/message",
-                json=body,
-                timeout=timeout,
-            ) as resp:
-                if resp.status_code != 200:
-                    console.print(f"[red]Error:[/red] {resp.status_code}")
-                    raise typer.Exit(1)
-
-                full_response = ""
-                for chunk in resp.iter_text():
-                    full_response += chunk
-
-                if full_response:
-                    try:
-                        data = json.loads(full_response)
-                        if raw:
-                            console.print(json.dumps(data, indent=2))
-                        else:
-                            parts = data.get("parts", [])
-                            for part in parts:
-                                if part.get("type") == "text":
-                                    console.print(part.get("text", ""))
-                    except json.JSONDecodeError:
-                        console.print(full_response)
-
-    except httpx.TimeoutException:
-        console.print(f"[red]Timeout after {timeout}s[/red]")
-        raise typer.Exit(1)
+        result = runner.send(session_id, message, agent=agent, timeout=timeout)
+        if raw:
+            console.print(json.dumps(result.raw, indent=2))
+        else:
+            console.print(result.text)
     except Exception as e:
-        console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_session_error(e)
 
 
 @app.command()
 def attach(session_id: str = typer.Argument(..., help="Session ID to attach")):
-    session = runner.status(session_id)
-    if not session:
-        console.print(f"[yellow]Not found:[/yellow] {session_id}")
-        raise typer.Exit(1)
-
-    if session.status != "running":
-        console.print(f"[red]Session not running:[/red] {session.status}")
-        raise typer.Exit(1)
-
-    import subprocess
-
-    url = f"http://localhost:{session.port}"
-    console.print(f"[dim]Attaching to {url}...[/dim]")
-    subprocess.run(["opencode", "attach", url])
+    try:
+        url = runner.get_attach_url(session_id)
+        console.print(f"[dim]Attaching to {url}...[/dim]")
+        subprocess.run(["opencode", "attach", url])
+    except Exception as e:
+        _handle_session_error(e)
 
 
 @app.command()
 def permissions(session_id: str = typer.Argument(..., help="Session ID")):
-    """List pending permission requests for a session."""
-    session = runner.status(session_id)
-    if not session:
-        console.print(f"[yellow]Not found:[/yellow] {session_id}")
-        raise typer.Exit(1)
-
-    if session.status != "running":
-        console.print(f"[red]Session not running:[/red] {session.status}")
-        raise typer.Exit(1)
-
-    import httpx
-
-    url = f"http://localhost:{session.port}"
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(f"{url}/permission")
-            if resp.status_code == 200:
-                data = resp.json()
-                if not data:
-                    console.print("[dim]No pending permissions[/dim]")
-                    return
+        perms = runner.list_permissions(session_id)
+        if not perms:
+            console.print("[dim]No pending permissions[/dim]")
+            return
 
-                table = Table()
-                table.add_column("ID")
-                table.add_column("Permission")
-                table.add_column("Pattern")
-                table.add_column("Tool")
+        table = Table()
+        table.add_column("ID")
+        table.add_column("Permission")
+        table.add_column("Pattern")
+        table.add_column("Tool")
 
-                for perm in data:
-                    table.add_row(
-                        perm.get("id", ""),
-                        perm.get("permission", ""),
-                        perm.get("pattern", ""),
-                        perm.get("tool", {}).get("name", ""),
-                    )
-                console.print(table)
-            else:
-                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
-                raise typer.Exit(1)
+        for p in perms:
+            table.add_row(p.id, p.permission, p.pattern, p.tool_name)
+
+        console.print(table)
     except Exception as e:
-        console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_session_error(e)
 
 
 @app.command()
@@ -252,34 +184,12 @@ def approve(
         False, "--always", "-a", help="Always allow this pattern"
     ),
 ):
-    """Approve a pending permission request."""
-    session = runner.status(session_id)
-    if not session:
-        console.print(f"[yellow]Not found:[/yellow] {session_id}")
-        raise typer.Exit(1)
-
-    if session.status != "running":
-        console.print(f"[red]Session not running:[/red] {session.status}")
-        raise typer.Exit(1)
-
-    import httpx
-
-    url = f"http://localhost:{session.port}"
-    reply = "always" if always else "once"
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(
-                f"{url}/permission/{permission_id}/reply",
-                json={"reply": reply},
-            )
-            if resp.status_code == 200:
-                console.print(f"[green]Approved ({reply}):[/green] {permission_id}")
-            else:
-                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
-                raise typer.Exit(1)
+        runner.approve_permission(session_id, permission_id, always=always)
+        reply = "always" if always else "once"
+        console.print(f"[green]Approved ({reply}):[/green] {permission_id}")
     except Exception as e:
-        console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_session_error(e)
 
 
 @app.command()
@@ -290,36 +200,11 @@ def reject(
         None, "--message", "-m", help="Rejection message"
     ),
 ):
-    """Reject a pending permission request."""
-    session = runner.status(session_id)
-    if not session:
-        console.print(f"[yellow]Not found:[/yellow] {session_id}")
-        raise typer.Exit(1)
-
-    if session.status != "running":
-        console.print(f"[red]Session not running:[/red] {session.status}")
-        raise typer.Exit(1)
-
-    import httpx
-
-    url = f"http://localhost:{session.port}"
-    body = {"reply": "reject"}
-    if message:
-        body["message"] = message
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(
-                f"{url}/permission/{permission_id}/reply",
-                json=body,
-            )
-            if resp.status_code == 200:
-                console.print(f"[yellow]Rejected:[/yellow] {permission_id}")
-            else:
-                console.print(f"[red]Error:[/red] {resp.status_code} {resp.text}")
-                raise typer.Exit(1)
+        runner.reject_permission(session_id, permission_id, message=message)
+        console.print(f"[yellow]Rejected:[/yellow] {permission_id}")
     except Exception as e:
-        console.print(f"[red]Failed:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_session_error(e)
 
 
 if __name__ == "__main__":
