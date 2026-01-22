@@ -50,13 +50,4 @@ if agent:
 - Don't hardcode ports → use store.allocate_port()
 - Don't create httpx.Client without timeout
 
-# OpenCode API Reference
-
-Endpoints used by client.py (from OpenCode server):
-
-```
-POST /session                    - Create session
-POST /session/{id}/message       - Send message (streaming response)
-GET  /permission                 - List pending permissions  
-POST /permission/{id}/reply      - Reply: once/always/reject
-```
+See `docs/opencode-api.md` for OpenCode HTTP API reference.
