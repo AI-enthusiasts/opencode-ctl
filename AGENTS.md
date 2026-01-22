@@ -63,7 +63,7 @@ POST /permission/{id}/reply      - Reply to permission (once/always/reject)
 ## Message Sending
 
 The `/message` endpoint returns streaming JSON. For blocking behavior:
-1. POST to `/session/{id}/message` with `{text, agent?}`
+1. POST to `/session/{id}/message` with `{parts: [{type: "text", text: "..."}], agent?}`
 2. Read streaming response until complete
 3. Parse final JSON for assistant message
 
@@ -71,7 +71,7 @@ The `/message` endpoint returns streaming JSON. For blocking behavior:
 
 Pass `agent` field in message body:
 ```json
-{"text": "...", "agent": "docs-retriever"}
+{"parts": [{"type": "text", "text": "..."}], "agent": "docs-retriever"}
 ```
 
 ## Event Subscription
