@@ -207,5 +207,11 @@ def reject(
         _handle_session_error(e)
 
 
+@app.command()
+def version():
+    """Print occtl version"""
+    console.print("0.2.0")
+
+
 if __name__ == "__main__":
     app()
