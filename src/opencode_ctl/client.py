@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import httpx
@@ -16,8 +16,25 @@ class SendResult:
 class Permission:
     id: str
     permission: str
-    pattern: str
+    patterns: list[str]
     tool_name: str
+
+
+@dataclass
+class Message:
+    id: str
+    role: str
+    text: str
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: int = 0
+
+
+@dataclass
+class SessionInfo:
+    id: str
+    title: str
+    created: int
+    updated: int
 
 
 class OpenCodeClientError(Exception):
@@ -57,9 +74,7 @@ class OpenCodeClient:
                 timeout=self.timeout,
             ) as resp:
                 if resp.status_code != 200:
-                    raise OpenCodeClientError(
-                        resp.status_code, "Failed to send message"
-                    )
+                    raise OpenCodeClientError(resp.status_code, "Failed to send message")
 
                 full_response = ""
                 for chunk in resp.iter_text():
@@ -92,7 +107,7 @@ class OpenCodeClient:
                 Permission(
                     id=p.get("id", ""),
                     permission=p.get("permission", ""),
-                    pattern=p.get("pattern", ""),
+                    patterns=p.get("patterns", []),
                     tool_name=p.get("tool", {}).get("name", ""),
                 )
                 for p in resp.json()
@@ -115,3 +130,52 @@ class OpenCodeClient:
             )
             if resp.status_code != 200:
                 raise OpenCodeClientError(resp.status_code, resp.text)
+
+    def list_oc_sessions(self) -> list[SessionInfo]:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{self.base_url}/session")
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+
+            return [
+                SessionInfo(
+                    id=s.get("id", ""),
+                    title=s.get("title", ""),
+                    created=s.get("time", {}).get("created", 0),
+                    updated=s.get("time", {}).get("updated", 0),
+                )
+                for s in resp.json()
+            ]
+
+    def get_messages(self, session_id: str, limit: int = 10) -> list[Message]:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{self.base_url}/session/{session_id}/message")
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+
+            messages = []
+            for m in resp.json()[-limit:]:
+                text_parts = []
+                tool_calls = []
+                for part in m.get("parts", []):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part.get("type") == "tool-invocation":
+                        inv = part.get("toolInvocation", {})
+                        tool_calls.append(
+                            {
+                                "tool": inv.get("toolName", ""),
+                                "state": inv.get("state", ""),
+                            }
+                        )
+
+                messages.append(
+                    Message(
+                        id=m.get("id", ""),
+                        role=m.get("role", "unknown"),
+                        text="\n".join(text_parts),
+                        tool_calls=tool_calls,
+                    )
+                )
+
+            return messages

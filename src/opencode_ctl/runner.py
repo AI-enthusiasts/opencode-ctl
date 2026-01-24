@@ -9,7 +9,14 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from .client import OpenCodeClient, OpenCodeClientError, Permission, SendResult
+from .client import (
+    OpenCodeClient,
+    OpenCodeClientError,
+    Message,
+    Permission,
+    SendResult,
+    SessionInfo,
+)
 from .store import Session, TransactionalStore
 
 
@@ -185,6 +192,16 @@ class OpenCodeRunner:
     def get_attach_url(self, session_id: str) -> str:
         session = self._get_running_session(session_id)
         return f"http://localhost:{session.port}"
+
+    def list_oc_sessions(self, session_id: str) -> list[SessionInfo]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.list_oc_sessions()
+
+    def get_messages(self, session_id: str, oc_session_id: str, limit: int = 10) -> list[Message]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.get_messages(oc_session_id, limit)
 
     def _get_running_session(self, session_id: str) -> Session:
         session = self.status(session_id)

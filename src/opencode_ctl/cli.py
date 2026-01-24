@@ -33,9 +33,7 @@ def start(
     workdir: Optional[str] = typer.Option(
         None, "--workdir", "-w", help="Working directory for OpenCode"
     ),
-    timeout: float = typer.Option(
-        30.0, "--timeout", "-t", help="Startup timeout in seconds"
-    ),
+    timeout: float = typer.Option(30.0, "--timeout", "-t", help="Startup timeout in seconds"),
 ):
     try:
         session = runner.start(workdir=workdir, timeout=timeout)
@@ -100,9 +98,7 @@ def list_sessions():
 
 @app.command()
 def cleanup(
-    max_idle: int = typer.Option(
-        60, "--max-idle", "-m", help="Max idle seconds before cleanup"
-    ),
+    max_idle: int = typer.Option(60, "--max-idle", "-m", help="Max idle seconds before cleanup"),
 ):
     stopped = runner.cleanup_idle(max_idle_seconds=max_idle)
     if stopped:
@@ -129,9 +125,7 @@ def send(
     agent: Optional[str] = typer.Option(
         None, "--agent", "-a", help="Agent to use (e.g., docs-retriever)"
     ),
-    timeout: float = typer.Option(
-        300.0, "--timeout", "-t", help="Request timeout in seconds"
-    ),
+    timeout: float = typer.Option(300.0, "--timeout", "-t", help="Request timeout in seconds"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw JSON response"),
 ):
     try:
@@ -162,14 +156,14 @@ def permissions(session_id: str = typer.Argument(..., help="Session ID")):
             console.print("[dim]No pending permissions[/dim]")
             return
 
-        table = Table()
-        table.add_column("ID")
-        table.add_column("Permission")
-        table.add_column("Pattern")
-        table.add_column("Tool")
+        table = Table(show_lines=True)
+        table.add_column("ID", style="dim")
+        table.add_column("Type")
+        table.add_column("Commands", style="cyan")
 
         for p in perms:
-            table.add_row(p.id, p.permission, p.pattern, p.tool_name)
+            commands = "\n".join(p.patterns) if p.patterns else "[dim]—[/dim]"
+            table.add_row(p.id, p.permission, commands)
 
         console.print(table)
     except Exception as e:
@@ -180,9 +174,7 @@ def permissions(session_id: str = typer.Argument(..., help="Session ID")):
 def approve(
     session_id: str = typer.Argument(..., help="Session ID"),
     permission_id: str = typer.Argument(..., help="Permission ID to approve"),
-    always: bool = typer.Option(
-        False, "--always", "-a", help="Always allow this pattern"
-    ),
+    always: bool = typer.Option(False, "--always", "-a", help="Always allow this pattern"),
 ):
     try:
         runner.approve_permission(session_id, permission_id, always=always)
@@ -196,9 +188,7 @@ def approve(
 def reject(
     session_id: str = typer.Argument(..., help="Session ID"),
     permission_id: str = typer.Argument(..., help="Permission ID to reject"),
-    message: Optional[str] = typer.Option(
-        None, "--message", "-m", help="Rejection message"
-    ),
+    message: Optional[str] = typer.Option(None, "--message", "-m", help="Rejection message"),
 ):
     try:
         runner.reject_permission(session_id, permission_id, message=message)
@@ -208,9 +198,79 @@ def reject(
 
 
 @app.command()
+def sessions(session_id: str = typer.Argument(..., help="occtl session ID")):
+    """List OpenCode sessions inside an occtl session"""
+    try:
+        oc_sessions = runner.list_oc_sessions(session_id)
+        if not oc_sessions:
+            console.print("[dim]No sessions[/dim]")
+            return
+
+        table = Table()
+        table.add_column("Session ID", style="cyan")
+        table.add_column("Title")
+        table.add_column("Updated")
+
+        from datetime import datetime
+
+        for s in oc_sessions:
+            updated = (
+                datetime.fromtimestamp(s.updated / 1000).strftime("%H:%M:%S") if s.updated else "—"
+            )
+            title = s.title[:50] + "..." if len(s.title) > 50 else s.title
+            table.add_row(s.id, title, updated)
+
+        console.print(table)
+    except Exception as e:
+        _handle_session_error(e)
+
+
+@app.command()
+def tail(
+    session_id: str = typer.Argument(..., help="occtl session ID"),
+    oc_session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="OpenCode session ID (uses latest if not specified)"
+    ),
+    limit: int = typer.Option(5, "--limit", "-n", help="Number of messages to show"),
+):
+    """Show recent messages from an OpenCode session (non-blocking)"""
+    try:
+        if not oc_session:
+            oc_sessions = runner.list_oc_sessions(session_id)
+            if not oc_sessions:
+                console.print("[dim]No sessions[/dim]")
+                return
+            oc_session = oc_sessions[0].id
+
+        messages = runner.get_messages(session_id, oc_session, limit)
+        if not messages:
+            console.print("[dim]No messages[/dim]")
+            return
+
+        for msg in messages:
+            role_color = {"user": "green", "assistant": "blue"}.get(msg.role, "white")
+            console.print(f"[{role_color}]━━━ {msg.role} ━━━[/{role_color}]")
+
+            if msg.text:
+                text = msg.text[:500] + "..." if len(msg.text) > 500 else msg.text
+                console.print(text)
+
+            for tc in msg.tool_calls:
+                state_color = {"result": "green", "call": "yellow"}.get(tc.get("state", ""), "dim")
+                console.print(
+                    f"  [{state_color}]⚡ {tc.get('tool')} ({tc.get('state')})[/{state_color}]"
+                )
+
+            console.print()
+
+    except Exception as e:
+        _handle_session_error(e)
+
+
+@app.command()
 def version():
     """Print occtl version"""
-    console.print("0.2.0")
+    console.print("0.3.0")
 
 
 if __name__ == "__main__":
