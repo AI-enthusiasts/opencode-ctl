@@ -82,6 +82,16 @@ def status(session_id: str = typer.Argument(..., help="Session ID")):
     console.print(f"  PID: {session.pid}")
     console.print(f"  Last activity: {session.last_activity}")
 
+    has_changes, changed_files = runner.has_uncommitted_changes(session_id)
+    if has_changes:
+        console.print(
+            f"\n  [yellow]Uncommitted changes ({len(changed_files)}):[/yellow]"
+        )
+        for file in changed_files:
+            console.print(f"    {file}")
+    else:
+        console.print(f"\n  [green]No uncommitted changes[/green]")
+
 
 @app.command(name="list")
 def list_sessions():
