@@ -109,8 +109,9 @@ def list_sessions():
     table.add_column("Last Activity")
 
     for s in sessions:
-        has_changes, _ = runner.has_uncommitted_changes(s.id)
-        dirty_marker = "[yellow]✗[/yellow]" if has_changes else "[green]✓[/green]"
+        dirty_marker = (
+            "[yellow]✗[/yellow]" if s.has_uncommitted_changes else "[green]✓[/green]"
+        )
         table.add_row(
             s.id, str(s.port), str(s.pid), s.status, dirty_marker, s.last_activity
         )

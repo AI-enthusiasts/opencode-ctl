@@ -18,12 +18,17 @@ class Session:
     last_activity: str
     config_path: Optional[str] = None
     status: str = "running"
+    has_uncommitted_changes: bool = False
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("has_uncommitted_changes", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Session:
+        data = data.copy()
+        data.pop("has_uncommitted_changes", None)
         return cls(**data)
 
 
