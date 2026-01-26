@@ -24,11 +24,19 @@ class Permission:
 
 
 @dataclass
+class ToolCall:
+    name: str
+    state: str
+    args: dict[str, Any] = field(default_factory=dict)
+    result: str = ""
+
+
+@dataclass
 class Message:
     id: str
     role: str
     text: str
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     timestamp: int = 0
 
 
@@ -38,6 +46,7 @@ class SessionInfo:
     title: str
     created: int
     updated: int
+    parent_id: str | None = None
 
 
 class OpenCodeClientError(Exception):
@@ -78,9 +87,7 @@ class OpenCodeClient:
                 timeout=self.timeout,
             ) as resp:
                 if resp.status_code != 200:
-                    raise OpenCodeClientError(
-                        resp.status_code, "Failed to send message"
-                    )
+                    raise OpenCodeClientError(resp.status_code, "Failed to send message")
 
                 full_response = ""
                 for chunk in resp.iter_text():
@@ -118,9 +125,7 @@ class OpenCodeClient:
                 json=body,
             )
             if resp.status_code not in (200, 204):
-                raise OpenCodeClientError(
-                    resp.status_code, "Failed to send async message"
-                )
+                raise OpenCodeClientError(resp.status_code, "Failed to send async message")
 
         return session_id
 
@@ -204,9 +209,27 @@ class OpenCodeClient:
                     title=s.get("title", ""),
                     created=s.get("time", {}).get("created", 0),
                     updated=s.get("time", {}).get("updated", 0),
+                    parent_id=s.get("parentID"),
                 )
                 for s in resp.json()
             ]
+
+    def get_session(self, session_id: str) -> SessionInfo | None:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{self.base_url}/session/{session_id}")
+            if resp.status_code == 404:
+                return None
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+
+            s = resp.json()
+            return SessionInfo(
+                id=s.get("id", ""),
+                title=s.get("title", ""),
+                created=s.get("time", {}).get("created", 0),
+                updated=s.get("time", {}).get("updated", 0),
+                parent_id=s.get("parentID"),
+            )
 
     def get_messages(self, session_id: str, limit: int = 10) -> list[Message]:
         with httpx.Client(timeout=10.0) as client:
@@ -222,21 +245,25 @@ class OpenCodeClient:
                 for part in m.get("parts", []):
                     if part.get("type") == "text":
                         text_parts.append(part.get("text", ""))
-                    elif part.get("type") == "tool-invocation":
-                        inv = part.get("toolInvocation", {})
+                    elif part.get("type") == "tool":
+                        state_info = part.get("state", {})
                         tool_calls.append(
-                            {
-                                "tool": inv.get("toolName", ""),
-                                "state": inv.get("state", ""),
-                            }
+                            ToolCall(
+                                name=part.get("tool", ""),
+                                state=state_info.get("status", ""),
+                                args=state_info.get("input", {}),
+                                result=str(state_info.get("output", "")),
+                            )
                         )
 
+                time_info = info.get("time", {})
                 messages.append(
                     Message(
                         id=info.get("id", ""),
                         role=info.get("role", "unknown"),
                         text="\n".join(text_parts),
                         tool_calls=tool_calls,
+                        timestamp=time_info.get("created", 0),
                     )
                 )
 

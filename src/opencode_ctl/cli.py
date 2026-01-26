@@ -70,9 +70,13 @@ def status(session_id: str = typer.Argument(..., help="Session ID")):
         console.print(f"[yellow]Not found:[/yellow] {session_id}")
         raise typer.Exit(1)
 
-    color = {"running": "green", "dead": "red", "unresponsive": "yellow"}.get(
-        session.status, "white"
-    )
+    color = {
+        "running": "green",
+        "idle": "cyan",
+        "waiting_permission": "yellow",
+        "dead": "red",
+        "error": "red",
+    }.get(session.status, "white")
     console.print(f"[{color}]{session.status}[/{color}] {session.id}")
     console.print(f"  Port: {session.port}")
     console.print(f"  PID: {session.pid}")
@@ -91,10 +95,15 @@ def list_sessions():
     table.add_column("Port")
     table.add_column("PID")
     table.add_column("Status")
+    table.add_column("Dirty")
     table.add_column("Last Activity")
 
     for s in sessions:
-        table.add_row(s.id, str(s.port), str(s.pid), s.status, s.last_activity)
+        has_changes, _ = runner.has_uncommitted_changes(s.id)
+        dirty_marker = "[yellow]✗[/yellow]" if has_changes else "[green]✓[/green]"
+        table.add_row(
+            s.id, str(s.port), str(s.pid), s.status, dirty_marker, s.last_activity
+        )
 
     console.print(table)
 
@@ -247,6 +256,46 @@ def sessions(session_id: str = typer.Argument(..., help="occtl session ID")):
 
 
 @app.command()
+def chain(
+    session_id: str = typer.Argument(..., help="occtl session ID"),
+    oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),
+):
+    """Show session chain (parent sessions from compaction)"""
+    try:
+        chain_sessions = runner.get_session_chain(session_id, oc_session)
+        if not chain_sessions:
+            console.print("[dim]No chain found[/dim]")
+            return
+
+        from datetime import datetime
+
+        table = Table(title="Session Chain")
+        table.add_column("Session ID", style="cyan")
+        table.add_column("Title")
+        table.add_column("Parent")
+        table.add_column("Created")
+
+        for s in chain_sessions:
+            created = (
+                datetime.fromtimestamp(s.created / 1000).strftime("%Y-%m-%d %H:%M")
+                if s.created
+                else "—"
+            )
+            title = s.title[:40] + "..." if len(s.title) > 40 else s.title
+            parent = (
+                s.parent_id[:20] + "..."
+                if s.parent_id and len(s.parent_id) > 20
+                else (s.parent_id or "—")
+            )
+            marker = "→ " if s.id == oc_session else "  "
+            table.add_row(marker + s.id, title, parent, created)
+
+        console.print(table)
+    except Exception as e:
+        _handle_session_error(e)
+
+
+@app.command()
 def tail(
     session_id: str = typer.Argument(..., help="occtl session ID"),
     oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),
@@ -262,8 +311,122 @@ def tail(
     raw: bool = typer.Option(
         False, "--raw", "-r", help="Output raw text only (no formatting)"
     ),
+    role: Optional[str] = typer.Option(
+        None, "--role", help="Filter by role: user, assistant"
+    ),
+    search: Optional[str] = typer.Option(
+        None,
+        "--search",
+        "-g",
+        help="Filter messages containing pattern (case-insensitive)",
+    ),
+    tools: bool = typer.Option(
+        False, "--tools", help="Show tool call details (args and results)"
+    ),
+    timestamps: bool = typer.Option(
+        False, "--timestamps", "-T", help="Show message timestamps"
+    ),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="Export messages to file"
+    ),
+    chain_mode: bool = typer.Option(
+        False,
+        "--chain",
+        "-C",
+        help="Include messages from parent sessions (full history)",
+    ),
 ):
     try:
+
+        def filter_messages(msgs: list) -> list:
+            result = msgs
+            if role:
+                result = [m for m in result if m.role == role]
+            if search:
+                pattern = search.lower()
+                result = [m for m in result if pattern in m.text.lower()]
+            return result
+
+        def format_message(msg, for_file: bool = False) -> str:
+            lines = []
+
+            if timestamps and msg.timestamp:
+                from datetime import datetime
+
+                ts = datetime.fromtimestamp(msg.timestamp / 1000).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if for_file:
+                    lines.append(f"[{ts}]")
+                else:
+                    lines.append(f"[dim][{ts}][/dim]")
+
+            if for_file:
+                lines.append(f"━━━ {msg.role} ━━━")
+            else:
+                role_color = {"user": "green", "assistant": "blue"}.get(
+                    msg.role, "white"
+                )
+                lines.append(f"[{role_color}]━━━ {msg.role} ━━━[/{role_color}]")
+
+            if msg.text:
+                text = (
+                    msg.text
+                    if full
+                    else (msg.text[:500] + "..." if len(msg.text) > 500 else msg.text)
+                )
+                lines.append(text)
+
+            for tc in msg.tool_calls:
+                if tools:
+                    if for_file:
+                        lines.append(f"  ⚡ {tc.name} ({tc.state})")
+                        if tc.args:
+                            import json
+
+                            args_str = json.dumps(tc.args, indent=4, ensure_ascii=False)
+                            for arg_line in args_str.split("\n"):
+                                lines.append(f"    {arg_line}")
+                        if tc.result and tc.state == "result":
+                            result_preview = (
+                                tc.result[:200] + "..."
+                                if len(tc.result) > 200
+                                else tc.result
+                            )
+                            lines.append(f"    → {result_preview}")
+                    else:
+                        state_color = {"result": "green", "call": "yellow"}.get(
+                            tc.state, "dim"
+                        )
+                        lines.append(
+                            f"  [{state_color}]⚡ {tc.name} ({tc.state})[/{state_color}]"
+                        )
+                        if tc.args:
+                            import json
+
+                            args_str = json.dumps(tc.args, indent=4, ensure_ascii=False)
+                            lines.append(f"[dim]{args_str}[/dim]")
+                        if tc.result and tc.state == "result":
+                            result_preview = (
+                                tc.result[:200] + "..."
+                                if len(tc.result) > 200
+                                else tc.result
+                            )
+                            lines.append(f"[dim]    → {result_preview}[/dim]")
+                else:
+                    if for_file:
+                        lines.append(f"  ⚡ {tc.name} ({tc.state})")
+                    else:
+                        state_color = {"result": "green", "call": "yellow"}.get(
+                            tc.state, "dim"
+                        )
+                        lines.append(
+                            f"  [{state_color}]⚡ {tc.name} ({tc.state})[/{state_color}]"
+                        )
+
+            lines.append("")
+            return "\n".join(lines)
+
         if follow:
             msg = runner.wait_for_response(session_id, oc_session, timeout=timeout)
             if not msg:
@@ -272,58 +435,53 @@ def tail(
             if raw:
                 console.print(msg.text)
             else:
-                _print_message(msg, full)
+                console.print(format_message(msg))
             return
 
         if last:
-            messages = runner.get_messages(session_id, oc_session, limit=20)
+            if chain_mode:
+                messages = runner.get_chain_messages(session_id, oc_session, limit=100)
+            else:
+                messages = runner.get_messages(session_id, oc_session, limit=20)
+            messages = filter_messages(messages)
             for msg in reversed(messages):
                 if msg.role == "assistant":
                     if raw:
                         console.print(msg.text)
                     else:
-                        _print_message(msg, full)
+                        console.print(format_message(msg))
                     return
             console.print("[dim]No assistant messages[/dim]")
             return
 
-        messages = runner.get_messages(session_id, oc_session, limit)
+        if chain_mode:
+            messages = runner.get_chain_messages(session_id, oc_session, limit)
+        else:
+            messages = runner.get_messages(session_id, oc_session, limit)
+        messages = filter_messages(messages)
+
         if not messages:
             console.print("[dim]No messages[/dim]")
             return
 
+        if output:
+            with open(output, "w") as f:
+                for msg in messages:
+                    f.write(format_message(msg, for_file=True))
+            console.print(
+                f"[green]Exported {len(messages)} messages to {output}[/green]"
+            )
+            return
+
         for msg in messages:
             if raw:
-                if msg.role == "assistant":
+                if msg.role == "assistant" or role == "user":
                     console.print(msg.text)
             else:
-                _print_message(msg, full)
+                console.print(format_message(msg))
 
     except Exception as e:
         _handle_session_error(e)
-
-
-def _print_message(msg, full: bool = False) -> None:
-    role_color = {"user": "green", "assistant": "blue"}.get(msg.role, "white")
-    console.print(f"[{role_color}]━━━ {msg.role} ━━━[/{role_color}]")
-
-    if msg.text:
-        text = (
-            msg.text
-            if full
-            else (msg.text[:500] + "..." if len(msg.text) > 500 else msg.text)
-        )
-        console.print(text)
-
-    for tc in msg.tool_calls:
-        state_color = {"result": "green", "call": "yellow"}.get(
-            tc.get("state", ""), "dim"
-        )
-        console.print(
-            f"  [{state_color}]⚡ {tc.get('tool')} ({tc.get('state')})[/{state_color}]"
-        )
-
-    console.print()
 
 
 @app.command()

@@ -312,6 +312,52 @@ class OpenCodeRunner:
         except ProcessLookupError:
             return False
 
+    def has_uncommitted_changes(self, session_id: str) -> tuple[bool, list[str]]:
+        """Check if session's working directory has uncommitted git changes.
+
+        Returns:
+            Tuple of (has_changes, list of changed files)
+        """
+        with TransactionalStore() as store:
+            session = store.get_session(session_id)
+            if not session or not session.config_path:
+                return (False, [])
+
+            workdir = session.config_path
+            if not os.path.isdir(workdir):
+                return (False, [])
+
+            # Check if directory is a git repository
+            git_dir = os.path.join(workdir, ".git")
+            if not os.path.isdir(git_dir):
+                return (False, [])
+
+            try:
+                # Run git status --porcelain to get uncommitted changes
+                result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                )
+
+                if result.returncode != 0:
+                    return (False, [])
+
+                # Parse output - each line is a changed file
+                changed_files = []
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        # Format: "XY filename" where X/Y are status codes
+                        # Extract just the filename (skip first 3 chars: status + space)
+                        changed_files.append(line[3:] if len(line) > 3 else line)
+
+                return (bool(changed_files), changed_files)
+
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                return (False, [])
+
     def _determine_status(self, session: Session) -> str:
         """Determine the actual status of a session.
 
