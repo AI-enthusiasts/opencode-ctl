@@ -100,6 +100,8 @@ class OpenCodeRunner:
                 return None
 
             session.status = self._determine_status(session)
+            has_changes, _ = self._check_git_changes(session)
+            session.has_uncommitted_changes = has_changes
 
             if session.status == "dead":
                 store.remove_session(session_id)
