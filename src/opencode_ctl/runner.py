@@ -112,9 +112,11 @@ class OpenCodeRunner:
             dead_ids = []
 
             for sid, session in store.sessions.items():
-                if not self._is_process_alive(session.pid):
+                status = self._determine_status(session)
+                if status == "dead":
                     dead_ids.append(sid)
                 else:
+                    session.status = status
                     sessions.append(session)
 
             for dead_id in dead_ids:
@@ -278,7 +280,7 @@ class OpenCodeRunner:
         session = self.status(session_id)
         if not session:
             raise SessionNotFoundError(session_id)
-        if session.status not in ("running", "waiting_permission"):
+        if session.status not in ("running", "waiting_permission", "idle"):
             raise SessionNotRunningError(session.status)
         return session
 
@@ -336,9 +338,13 @@ class OpenCodeRunner:
             if not oc_sessions:
                 return "idle"
 
+            # Consider session busy only if updated recently (within last 10 seconds)
+            now_ms = int(time.time() * 1000)
             for oc_sess in oc_sessions:
-                if client.is_session_busy(oc_sess.id):
-                    return "running"
+                # Check if session was updated recently (less than 10 seconds ago)
+                if oc_sess.updated and (now_ms - oc_sess.updated) < 10_000:
+                    if client.is_session_busy(oc_sess.id):
+                        return "running"
 
             return "idle"
 
