@@ -1,3 +1,4 @@
+from importlib.metadata import version as get_version
 from typing import Optional
 import json
 import subprocess
@@ -33,7 +34,9 @@ def start(
     workdir: Optional[str] = typer.Option(
         None, "--workdir", "-w", help="Working directory for OpenCode"
     ),
-    timeout: float = typer.Option(30.0, "--timeout", "-t", help="Startup timeout in seconds"),
+    timeout: float = typer.Option(
+        30.0, "--timeout", "-t", help="Startup timeout in seconds"
+    ),
 ):
     try:
         session = runner.start(workdir=workdir, timeout=timeout)
@@ -98,7 +101,9 @@ def list_sessions():
 
 @app.command()
 def cleanup(
-    max_idle: int = typer.Option(60, "--max-idle", "-m", help="Max idle seconds before cleanup"),
+    max_idle: int = typer.Option(
+        60, "--max-idle", "-m", help="Max idle seconds before cleanup"
+    ),
 ):
     stopped = runner.cleanup_idle(max_idle_seconds=max_idle)
     if stopped:
@@ -125,15 +130,25 @@ def send(
     agent: Optional[str] = typer.Option(
         None, "--agent", "-a", help="Agent to use (e.g., docs-retriever)"
     ),
-    timeout: float = typer.Option(300.0, "--timeout", "-t", help="Request timeout in seconds"),
+    timeout: float = typer.Option(
+        300.0, "--timeout", "-t", help="Request timeout in seconds"
+    ),
+    wait: bool = typer.Option(
+        False, "--wait", "-w", help="Wait for response (sync mode)"
+    ),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw JSON response"),
 ):
     try:
-        result = runner.send(session_id, message, agent=agent, timeout=timeout)
-        if raw:
-            console.print(json.dumps(result.raw, indent=2))
+        result = runner.send(
+            session_id, message, agent=agent, timeout=timeout, wait=wait
+        )
+        if wait:
+            if raw:
+                console.print(json.dumps(result.raw, indent=2))
+            else:
+                console.print(result.text)
         else:
-            console.print(result.text)
+            console.print(result.session_id)
     except Exception as e:
         _handle_session_error(e)
 
@@ -174,7 +189,9 @@ def permissions(session_id: str = typer.Argument(..., help="Session ID")):
 def approve(
     session_id: str = typer.Argument(..., help="Session ID"),
     permission_id: str = typer.Argument(..., help="Permission ID to approve"),
-    always: bool = typer.Option(False, "--always", "-a", help="Always allow this pattern"),
+    always: bool = typer.Option(
+        False, "--always", "-a", help="Always allow this pattern"
+    ),
 ):
     try:
         runner.approve_permission(session_id, permission_id, always=always)
@@ -188,7 +205,9 @@ def approve(
 def reject(
     session_id: str = typer.Argument(..., help="Session ID"),
     permission_id: str = typer.Argument(..., help="Permission ID to reject"),
-    message: Optional[str] = typer.Option(None, "--message", "-m", help="Rejection message"),
+    message: Optional[str] = typer.Option(
+        None, "--message", "-m", help="Rejection message"
+    ),
 ):
     try:
         runner.reject_permission(session_id, permission_id, message=message)
@@ -215,7 +234,9 @@ def sessions(session_id: str = typer.Argument(..., help="occtl session ID")):
 
         for s in oc_sessions:
             updated = (
-                datetime.fromtimestamp(s.updated / 1000).strftime("%H:%M:%S") if s.updated else "—"
+                datetime.fromtimestamp(s.updated / 1000).strftime("%H:%M:%S")
+                if s.updated
+                else "—"
             )
             title = s.title[:50] + "..." if len(s.title) > 50 else s.title
             table.add_row(s.id, title, updated)
@@ -228,19 +249,43 @@ def sessions(session_id: str = typer.Argument(..., help="occtl session ID")):
 @app.command()
 def tail(
     session_id: str = typer.Argument(..., help="occtl session ID"),
-    oc_session: Optional[str] = typer.Option(
-        None, "--session", "-s", help="OpenCode session ID (uses latest if not specified)"
+    oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Wait for completion"),
+    last: bool = typer.Option(
+        False, "--last", "-l", help="Only show last assistant message"
     ),
+    full: bool = typer.Option(False, "--full", help="Don't truncate text"),
     limit: int = typer.Option(5, "--limit", "-n", help="Number of messages to show"),
+    timeout: float = typer.Option(
+        300.0, "--timeout", "-t", help="Follow timeout in seconds"
+    ),
+    raw: bool = typer.Option(
+        False, "--raw", "-r", help="Output raw text only (no formatting)"
+    ),
 ):
-    """Show recent messages from an OpenCode session (non-blocking)"""
     try:
-        if not oc_session:
-            oc_sessions = runner.list_oc_sessions(session_id)
-            if not oc_sessions:
-                console.print("[dim]No sessions[/dim]")
-                return
-            oc_session = oc_sessions[0].id
+        if follow:
+            msg = runner.wait_for_response(session_id, oc_session, timeout=timeout)
+            if not msg:
+                console.print("[yellow]Timeout waiting for response[/yellow]")
+                raise typer.Exit(1)
+            if raw:
+                console.print(msg.text)
+            else:
+                _print_message(msg, full)
+            return
+
+        if last:
+            messages = runner.get_messages(session_id, oc_session, limit=20)
+            for msg in reversed(messages):
+                if msg.role == "assistant":
+                    if raw:
+                        console.print(msg.text)
+                    else:
+                        _print_message(msg, full)
+                    return
+            console.print("[dim]No assistant messages[/dim]")
+            return
 
         messages = runner.get_messages(session_id, oc_session, limit)
         if not messages:
@@ -248,29 +293,42 @@ def tail(
             return
 
         for msg in messages:
-            role_color = {"user": "green", "assistant": "blue"}.get(msg.role, "white")
-            console.print(f"[{role_color}]━━━ {msg.role} ━━━[/{role_color}]")
-
-            if msg.text:
-                text = msg.text[:500] + "..." if len(msg.text) > 500 else msg.text
-                console.print(text)
-
-            for tc in msg.tool_calls:
-                state_color = {"result": "green", "call": "yellow"}.get(tc.get("state", ""), "dim")
-                console.print(
-                    f"  [{state_color}]⚡ {tc.get('tool')} ({tc.get('state')})[/{state_color}]"
-                )
-
-            console.print()
+            if raw:
+                if msg.role == "assistant":
+                    console.print(msg.text)
+            else:
+                _print_message(msg, full)
 
     except Exception as e:
         _handle_session_error(e)
 
 
+def _print_message(msg, full: bool = False) -> None:
+    role_color = {"user": "green", "assistant": "blue"}.get(msg.role, "white")
+    console.print(f"[{role_color}]━━━ {msg.role} ━━━[/{role_color}]")
+
+    if msg.text:
+        text = (
+            msg.text
+            if full
+            else (msg.text[:500] + "..." if len(msg.text) > 500 else msg.text)
+        )
+        console.print(text)
+
+    for tc in msg.tool_calls:
+        state_color = {"result": "green", "call": "yellow"}.get(
+            tc.get("state", ""), "dim"
+        )
+        console.print(
+            f"  [{state_color}]⚡ {tc.get('tool')} ({tc.get('state')})[/{state_color}]"
+        )
+
+    console.print()
+
+
 @app.command()
 def version():
-    """Print occtl version"""
-    console.print("0.3.0")
+    console.print(get_version("opencode-ctl"))
 
 
 if __name__ == "__main__":

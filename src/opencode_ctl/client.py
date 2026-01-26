@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -10,6 +12,7 @@ import httpx
 class SendResult:
     text: str
     raw: dict[str, Any]
+    session_id: str = ""
 
 
 @dataclass
@@ -62,6 +65,7 @@ class OpenCodeClient:
         text: str,
         agent: Optional[str] = None,
     ) -> SendResult:
+        """Send message synchronously (blocking, waits for response)."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             body["agent"] = agent
@@ -74,28 +78,85 @@ class OpenCodeClient:
                 timeout=self.timeout,
             ) as resp:
                 if resp.status_code != 200:
-                    raise OpenCodeClientError(resp.status_code, "Failed to send message")
+                    raise OpenCodeClientError(
+                        resp.status_code, "Failed to send message"
+                    )
 
                 full_response = ""
                 for chunk in resp.iter_text():
                     full_response += chunk
 
         if not full_response:
-            return SendResult(text="", raw={})
-
-        import json
+            return SendResult(text="", raw={}, session_id=session_id)
 
         try:
             data = json.loads(full_response)
         except json.JSONDecodeError:
-            return SendResult(text=full_response, raw={})
+            return SendResult(text=full_response, raw={}, session_id=session_id)
 
         text_parts = []
         for part in data.get("parts", []):
             if part.get("type") == "text":
                 text_parts.append(part.get("text", ""))
 
-        return SendResult(text="\n".join(text_parts), raw=data)
+        return SendResult(text="\n".join(text_parts), raw=data, session_id=session_id)
+
+    def send_message_async(
+        self,
+        session_id: str,
+        text: str,
+        agent: Optional[str] = None,
+    ) -> str:
+        """Send message asynchronously (non-blocking, returns immediately)."""
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if agent:
+            body["agent"] = agent
+
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{self.base_url}/session/{session_id}/prompt_async",
+                json=body,
+            )
+            if resp.status_code not in (200, 204):
+                raise OpenCodeClientError(
+                    resp.status_code, "Failed to send async message"
+                )
+
+        return session_id
+
+    def is_session_busy(self, session_id: str) -> bool:
+        """Check if session is currently processing (last message is from user or assistant with no text)."""
+        messages = self.get_messages(session_id, limit=1)
+        if not messages:
+            return True
+        last = messages[-1]
+        if last.role == "user":
+            return True
+        if last.role == "assistant" and not last.text.strip():
+            return True
+        return False
+
+    def get_last_assistant_message(self, session_id: str) -> Optional[Message]:
+        """Get the last assistant message from session."""
+        messages = self.get_messages(session_id, limit=20)
+        for msg in reversed(messages):
+            if msg.role == "assistant":
+                return msg
+        return None
+
+    def wait_for_completion(
+        self,
+        session_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> Optional[Message]:
+        """Wait for session to complete processing and return last assistant message."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self.is_session_busy(session_id):
+                return self.get_last_assistant_message(session_id)
+            time.sleep(poll_interval)
+        return None
 
     def list_permissions(self) -> list[Permission]:
         with httpx.Client(timeout=10.0) as client:
@@ -155,6 +216,7 @@ class OpenCodeClient:
 
             messages = []
             for m in resp.json()[-limit:]:
+                info = m.get("info", {})
                 text_parts = []
                 tool_calls = []
                 for part in m.get("parts", []):
@@ -171,8 +233,8 @@ class OpenCodeClient:
 
                 messages.append(
                     Message(
-                        id=m.get("id", ""),
-                        role=m.get("role", "unknown"),
+                        id=info.get("id", ""),
+                        role=info.get("role", "unknown"),
                         text="\n".join(text_parts),
                         tool_calls=tool_calls,
                     )

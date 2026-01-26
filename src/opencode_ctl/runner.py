@@ -46,7 +46,7 @@ class OpenCodeRunner:
 
             cwd = workdir or os.getcwd()
             if not os.path.isdir(cwd):
-                raise FileNotFoundError(cwd)
+                os.makedirs(cwd, exist_ok=True)
 
             proc = subprocess.Popen(
                 cmd,
@@ -155,13 +155,30 @@ class OpenCodeRunner:
         message: str,
         agent: Optional[str] = None,
         timeout: float = 300.0,
+        wait: bool = False,
     ) -> SendResult:
         session = self._get_running_session(session_id)
         self.touch(session_id)
 
         client = OpenCodeClient(f"http://localhost:{session.port}", timeout=timeout)
         oc_session_id = client.create_session()
-        return client.send_message(oc_session_id, message, agent)
+
+        if wait:
+            return client.send_message(oc_session_id, message, agent)
+
+        client.send_message_async(oc_session_id, message, agent)
+        return SendResult(text="", raw={}, session_id=oc_session_id)
+
+    def wait_for_response(
+        self,
+        session_id: str,
+        oc_session_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> Optional[Message]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.wait_for_completion(oc_session_id, timeout, poll_interval)
 
     def list_permissions(self, session_id: str) -> list[Permission]:
         session = self._get_running_session(session_id)
@@ -198,7 +215,9 @@ class OpenCodeRunner:
         client = OpenCodeClient(f"http://localhost:{session.port}")
         return client.list_oc_sessions()
 
-    def get_messages(self, session_id: str, oc_session_id: str, limit: int = 10) -> list[Message]:
+    def get_messages(
+        self, session_id: str, oc_session_id: str, limit: int = 10
+    ) -> list[Message]:
         session = self._get_running_session(session_id)
         client = OpenCodeClient(f"http://localhost:{session.port}")
         return client.get_messages(oc_session_id, limit)
