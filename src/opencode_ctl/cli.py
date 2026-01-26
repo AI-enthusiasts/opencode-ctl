@@ -90,7 +90,7 @@ def status(session_id: str = typer.Argument(..., help="Session ID")):
         for file in changed_files:
             console.print(f"    {file}")
     else:
-        console.print(f"\n  [green]No uncommitted changes[/green]")
+        console.print("\n  [green]No uncommitted changes[/green]")
 
 
 @app.command(name="list")
