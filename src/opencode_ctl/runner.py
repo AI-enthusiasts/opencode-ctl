@@ -99,11 +99,10 @@ class OpenCodeRunner:
             if not session:
                 return None
 
-            if not self._is_process_alive(session.pid):
-                session.status = "dead"
+            session.status = self._determine_status(session)
+
+            if session.status == "dead":
                 store.remove_session(session_id)
-            else:
-                session.status = "running"
 
             return session
 
@@ -215,6 +214,34 @@ class OpenCodeRunner:
         client = OpenCodeClient(f"http://localhost:{session.port}")
         return client.list_oc_sessions()
 
+    def get_oc_session(self, session_id: str, oc_session_id: str) -> SessionInfo | None:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.get_session(oc_session_id)
+
+    def get_session_chain(
+        self, session_id: str, oc_session_id: str
+    ) -> list[SessionInfo]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        all_sessions = client.list_oc_sessions()
+        sessions_by_id = {s.id: s for s in all_sessions}
+
+        chain = []
+        current_id: str | None = oc_session_id
+
+        while current_id and current_id in sessions_by_id:
+            sess = sessions_by_id[current_id]
+            chain.append(sess)
+            current_id = sess.parent_id
+
+        chain.reverse()
+
+        children = [s for s in all_sessions if s.parent_id == oc_session_id]
+        chain.extend(sorted(children, key=lambda s: s.created))
+
+        return chain
+
     def get_messages(
         self, session_id: str, oc_session_id: str, limit: int = 10
     ) -> list[Message]:
@@ -222,11 +249,36 @@ class OpenCodeRunner:
         client = OpenCodeClient(f"http://localhost:{session.port}")
         return client.get_messages(oc_session_id, limit)
 
+    def get_chain_messages(
+        self, session_id: str, oc_session_id: str, limit: int = 100
+    ) -> list[Message]:
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+
+        all_sessions = client.list_oc_sessions()
+        sessions_by_id = {s.id: s for s in all_sessions}
+
+        parent_chain = []
+        current_id: str | None = oc_session_id
+        while current_id and current_id in sessions_by_id:
+            parent_chain.append(current_id)
+            current_id = sessions_by_id[current_id].parent_id
+        parent_chain.reverse()
+
+        all_messages = []
+        for sess_id in parent_chain:
+            messages = client.get_messages(sess_id, limit=1000)
+            all_messages.extend(messages)
+
+        all_messages.sort(key=lambda m: m.timestamp)
+
+        return all_messages[-limit:] if len(all_messages) > limit else all_messages
+
     def _get_running_session(self, session_id: str) -> Session:
         session = self.status(session_id)
         if not session:
             raise SessionNotFoundError(session_id)
-        if session.status != "running":
+        if session.status not in ("running", "waiting_permission"):
             raise SessionNotRunningError(session.status)
         return session
 
@@ -257,3 +309,39 @@ class OpenCodeRunner:
             return True
         except ProcessLookupError:
             return False
+
+    def _determine_status(self, session: Session) -> str:
+        """Determine the actual status of a session.
+
+        Returns:
+            - "dead" if process is not alive
+            - "waiting_permission" if has pending permissions
+            - "idle" if not busy and no pending permissions
+            - "running" if actively processing
+            - "error" if cannot determine (e.g., server unreachable)
+        """
+        if not self._is_process_alive(session.pid):
+            return "dead"
+
+        try:
+            client = OpenCodeClient(f"http://localhost:{session.port}")
+
+            # Check for pending permissions first
+            permissions = client.list_permissions()
+            if permissions:
+                return "waiting_permission"
+
+            # Check if any OpenCode session is busy
+            oc_sessions = client.list_oc_sessions()
+            if not oc_sessions:
+                return "idle"
+
+            for oc_sess in oc_sessions:
+                if client.is_session_busy(oc_sess.id):
+                    return "running"
+
+            return "idle"
+
+        except (OpenCodeClientError, Exception):
+            # If we can't connect to the server, mark as error
+            return "error"
