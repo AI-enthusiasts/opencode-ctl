@@ -39,6 +39,7 @@ class OpenCodeRunner:
         workdir: Optional[str] = None,
         timeout: float = 30.0,
         allow_occtl_commands: bool = False,
+        agent: Optional[str] = None,
     ) -> Session:
         with TransactionalStore() as store:
             port = store.allocate_port()
@@ -90,6 +91,7 @@ class OpenCodeRunner:
                 last_activity=now,
                 config_path=workdir,
                 status="running",
+                agent=agent,
             )
 
             store.add_session(session)

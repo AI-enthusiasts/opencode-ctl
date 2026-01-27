@@ -40,14 +40,22 @@ def start(
     allow_occtl_commands: bool = typer.Option(
         False, "--allow-occtl-commands", help="Allow occtl commands inside session"
     ),
+    agent: Optional[str] = typer.Option(
+        None, "--agent", "-a", help="Default agent for this session"
+    ),
 ):
     try:
         session = runner.start(
-            workdir=workdir, timeout=timeout, allow_occtl_commands=allow_occtl_commands
+            workdir=workdir,
+            timeout=timeout,
+            allow_occtl_commands=allow_occtl_commands,
+            agent=agent,
         )
         console.print(f"[green]Started session:[/green] {session.id}")
         console.print(f"  Port: {session.port}")
         console.print(f"  PID: {session.pid}")
+        if session.agent:
+            console.print(f"  Agent: {session.agent}")
     except FileNotFoundError as e:
         console.print(f"[red]Directory not found:[/red] {e}")
         raise typer.Exit(1)
@@ -85,6 +93,8 @@ def status(session_id: str = typer.Argument(..., help="Session ID")):
     console.print(f"[{color}]{session.status}[/{color}] {session.id}")
     console.print(f"  Port: {session.port}")
     console.print(f"  PID: {session.pid}")
+    if session.agent:
+        console.print(f"  Agent: {session.agent}")
     console.print(f"  Last activity: {session.last_activity}")
 
     has_changes, changed_files = runner.has_uncommitted_changes(session_id)
@@ -110,6 +120,7 @@ def list_sessions():
     table.add_column("Port")
     table.add_column("PID")
     table.add_column("Status")
+    table.add_column("Agent")
     table.add_column("Dirty")
     table.add_column("Last Activity")
 
@@ -118,7 +129,13 @@ def list_sessions():
             "[yellow]✗[/yellow]" if s.has_uncommitted_changes else "[green]✓[/green]"
         )
         table.add_row(
-            s.id, str(s.port), str(s.pid), s.status, dirty_marker, s.last_activity
+            s.id,
+            str(s.port),
+            str(s.pid),
+            s.status,
+            s.agent or "[dim]—[/dim]",
+            dirty_marker,
+            s.last_activity,
         )
 
     console.print(table)

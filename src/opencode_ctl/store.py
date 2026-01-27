@@ -19,16 +19,23 @@ class Session:
     config_path: Optional[str] = None
     status: str = "running"
     has_uncommitted_changes: bool = False
+    agent: Optional[str] = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("has_uncommitted_changes", None)
+        # Don't persist None agent
+        if data.get("agent") is None:
+            data.pop("agent", None)
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Session:
         data = data.copy()
         data.pop("has_uncommitted_changes", None)
+        # Handle missing agent field for backward compatibility
+        if "agent" not in data:
+            data["agent"] = None
         return cls(**data)
 
 
