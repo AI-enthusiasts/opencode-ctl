@@ -206,23 +206,64 @@ def attach(session_id: str = typer.Argument(..., help="Session ID to attach")):
 
 
 @app.command()
-def permissions(session_id: str = typer.Argument(..., help="Session ID")):
+def permissions(
+    session_id: Optional[str] = typer.Argument(
+        None, help="Session ID (omit to show all sessions)"
+    ),
+):
     try:
-        perms = runner.list_permissions(session_id)
-        if not perms:
-            console.print("[dim]No pending permissions[/dim]")
-            return
+        if session_id:
+            # Single session mode
+            perms = runner.list_permissions(session_id)
+            if not perms:
+                console.print("[dim]No pending permissions[/dim]")
+                return
 
-        table = Table(show_lines=True)
-        table.add_column("ID", style="dim")
-        table.add_column("Type")
-        table.add_column("Commands", style="cyan")
+            table = Table(show_lines=True)
+            table.add_column("ID", style="dim")
+            table.add_column("Type")
+            table.add_column("Commands", style="cyan")
 
-        for p in perms:
-            commands = "\n".join(p.patterns) if p.patterns else "[dim]—[/dim]"
-            table.add_row(p.id, p.permission, commands)
+            for p in perms:
+                commands = "\n".join(p.patterns) if p.patterns else "[dim]—[/dim]"
+                table.add_row(p.id, p.permission, commands)
 
-        console.print(table)
+            console.print(table)
+        else:
+            # All sessions mode
+            sessions = runner.list_sessions()
+            if not sessions:
+                console.print("[dim]No active sessions[/dim]")
+                return
+
+            total_perms = 0
+            for s in sessions:
+                if s.status == "dead":
+                    continue
+                try:
+                    perms = runner.list_permissions(s.id)
+                    if perms:
+                        total_perms += len(perms)
+                        console.print(f"\n[bold cyan]{s.id}[/bold cyan]")
+
+                        table = Table(show_lines=True)
+                        table.add_column("ID", style="dim")
+                        table.add_column("Type")
+                        table.add_column("Commands", style="cyan")
+
+                        for p in perms:
+                            commands = (
+                                "\n".join(p.patterns) if p.patterns else "[dim]—[/dim]"
+                            )
+                            table.add_row(p.id, p.permission, commands)
+
+                        console.print(table)
+                except Exception:
+                    # Session might have died between list and permissions check
+                    pass
+
+            if total_perms == 0:
+                console.print("[dim]No pending permissions in any session[/dim]")
     except Exception as e:
         _handle_session_error(e)
 
