@@ -126,7 +126,7 @@ def list_sessions():
 
     for s in sessions:
         dirty_marker = (
-            "[yellow]✗[/yellow]" if s.has_uncommitted_changes else "[green]✓[/green]"
+            "[yellow]✓[/yellow]" if s.has_uncommitted_changes else "[green]✗[/green]"
         )
         table.add_row(
             s.id,
