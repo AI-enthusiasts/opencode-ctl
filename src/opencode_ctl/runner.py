@@ -34,7 +34,12 @@ class OpenCodeRunner:
     def __init__(self, opencode_bin: str = "opencode"):
         self.opencode_bin = opencode_bin
 
-    def start(self, workdir: Optional[str] = None, timeout: float = 30.0) -> Session:
+    def start(
+        self,
+        workdir: Optional[str] = None,
+        timeout: float = 30.0,
+        allow_occtl_commands: bool = False,
+    ) -> Session:
         with TransactionalStore() as store:
             port = store.allocate_port()
             session_id = f"oc-{uuid.uuid4().hex[:8]}"
@@ -43,6 +48,19 @@ class OpenCodeRunner:
 
             env = os.environ.copy()
             env["OPENCODE_SESSION_ID"] = session_id
+
+            # Configure OPENCODE_BLACKLIST for occtl commands
+            if not allow_occtl_commands:
+                existing_blacklist = env.get("OPENCODE_BLACKLIST", "")
+                occtl_block = "bash:occtl"
+                if existing_blacklist:
+                    # Append to existing blacklist if not already present
+                    if occtl_block not in existing_blacklist:
+                        env["OPENCODE_BLACKLIST"] = (
+                            f"{existing_blacklist},{occtl_block}"
+                        )
+                else:
+                    env["OPENCODE_BLACKLIST"] = occtl_block
 
             cwd = workdir or os.getcwd()
             if not os.path.isdir(cwd):

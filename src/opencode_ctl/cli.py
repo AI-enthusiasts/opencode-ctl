@@ -37,9 +37,14 @@ def start(
     timeout: float = typer.Option(
         30.0, "--timeout", "-t", help="Startup timeout in seconds"
     ),
+    allow_occtl_commands: bool = typer.Option(
+        False, "--allow-occtl-commands", help="Allow occtl commands inside session"
+    ),
 ):
     try:
-        session = runner.start(workdir=workdir, timeout=timeout)
+        session = runner.start(
+            workdir=workdir, timeout=timeout, allow_occtl_commands=allow_occtl_commands
+        )
         console.print(f"[green]Started session:[/green] {session.id}")
         console.print(f"  Port: {session.port}")
         console.print(f"  PID: {session.pid}")
