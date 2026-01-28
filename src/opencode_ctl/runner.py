@@ -48,6 +48,12 @@ class OpenCodeRunner:
             cmd = [self.opencode_bin, "serve", "--port", str(port)]
 
             env = os.environ.copy()
+
+            # Pass parent session ID if this is a nested occtl start
+            parent_session_id = os.environ.get("OPENCODE_SESSION_ID")
+            if parent_session_id:
+                env["OPENCODE_PARENT_SESSION_ID"] = parent_session_id
+
             env["OPENCODE_SESSION_ID"] = session_id
 
             # Configure OPENCODE_BLACKLIST for occtl commands
