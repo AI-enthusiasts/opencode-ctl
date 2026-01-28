@@ -49,8 +49,17 @@ class OpenCodeRunner:
 
             env = os.environ.copy()
 
-            # Pass parent session ID if this is a nested occtl start
+            # Pass parent session ID: env (nested occtl) or file (main session)
             parent_session_id = os.environ.get("OPENCODE_SESSION_ID")
+            if not parent_session_id:
+                uid = os.getuid()
+                session_file = f"/tmp/opencode-main-session-{uid}.id"
+                if os.path.exists(session_file):
+                    try:
+                        with open(session_file) as f:
+                            parent_session_id = f.read().strip()
+                    except Exception:
+                        pass
             if parent_session_id:
                 env["OPENCODE_PARENT_SESSION_ID"] = parent_session_id
 
