@@ -283,6 +283,17 @@ class OpenCodeRunner:
 
         return chain
 
+    def fork_session(
+        self,
+        session_id: str,
+        oc_session_id: str,
+        message_id: Optional[str] = None,
+    ) -> SessionInfo:
+        """Fork an OpenCode session. Copies messages up to (not including) message_id."""
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.fork_session(oc_session_id, message_id)
+
     def get_messages(
         self, session_id: str, oc_session_id: str, limit: int = 10
     ) -> list[Message]:

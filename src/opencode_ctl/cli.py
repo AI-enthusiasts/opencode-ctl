@@ -370,6 +370,26 @@ def chain(
 
 
 @app.command()
+def fork(
+    session_id: str = typer.Argument(..., help="occtl session ID"),
+    oc_session: str = typer.Option(
+        ..., "--session", "-s", help="OpenCode session ID to fork"
+    ),
+    message_id: Optional[str] = typer.Option(
+        None, "--message", "-m", help="Fork up to (not including) this message ID"
+    ),
+):
+    """Fork an OpenCode session, creating a copy of its conversation history."""
+    try:
+        forked = runner.fork_session(session_id, oc_session, message_id)
+        console.print(f"[green]Forked:[/green] {forked.id}")
+        if forked.parent_id:
+            console.print(f"  Parent: {forked.parent_id}")
+    except Exception as e:
+        _handle_session_error(e)
+
+
+@app.command()
 def tail(
     session_id: str = typer.Argument(..., help="occtl session ID"),
     oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),

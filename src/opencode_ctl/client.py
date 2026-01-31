@@ -87,7 +87,9 @@ class OpenCodeClient:
                 timeout=self.timeout,
             ) as resp:
                 if resp.status_code != 200:
-                    raise OpenCodeClientError(resp.status_code, "Failed to send message")
+                    raise OpenCodeClientError(
+                        resp.status_code, "Failed to send message"
+                    )
 
                 full_response = ""
                 for chunk in resp.iter_text():
@@ -125,7 +127,9 @@ class OpenCodeClient:
                 json=body,
             )
             if resp.status_code not in (200, 204):
-                raise OpenCodeClientError(resp.status_code, "Failed to send async message")
+                raise OpenCodeClientError(
+                    resp.status_code, "Failed to send async message"
+                )
 
         return session_id
 
@@ -219,6 +223,33 @@ class OpenCodeClient:
             resp = client.get(f"{self.base_url}/session/{session_id}")
             if resp.status_code == 404:
                 return None
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+
+            s = resp.json()
+            return SessionInfo(
+                id=s.get("id", ""),
+                title=s.get("title", ""),
+                created=s.get("time", {}).get("created", 0),
+                updated=s.get("time", {}).get("updated", 0),
+                parent_id=s.get("parentID"),
+            )
+
+    def fork_session(
+        self,
+        session_id: str,
+        message_id: Optional[str] = None,
+    ) -> SessionInfo:
+        """Fork a session, copying all messages up to (but not including) message_id."""
+        body: dict[str, Any] = {}
+        if message_id:
+            body["messageID"] = message_id
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(
+                f"{self.base_url}/session/{session_id}/fork",
+                json=body,
+            )
             if resp.status_code != 200:
                 raise OpenCodeClientError(resp.status_code, resp.text)
 
