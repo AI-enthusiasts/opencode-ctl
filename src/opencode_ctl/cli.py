@@ -569,8 +569,7 @@ def tail(
 
         for msg in messages:
             if raw:
-                if msg.role == "assistant" or role == "user":
-                    console.print(msg.text)
+                console.print(msg.text)
             else:
                 console.print(format_message(msg))
 

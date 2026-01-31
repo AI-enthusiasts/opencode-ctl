@@ -11,7 +11,6 @@ from typing import Optional
 
 from .client import (
     OpenCodeClient,
-    OpenCodeClientError,
     Message,
     Permission,
     SendResult,
@@ -134,34 +133,41 @@ class OpenCodeRunner:
             if not session:
                 return None
 
-            session.status = self._determine_status(session)
-            has_changes, _ = self._check_git_changes(session)
-            session.has_uncommitted_changes = has_changes
+        # Determine status outside the lock to avoid blocking on network/subprocess calls
+        session.status = self._determine_status(session)
+        has_changes, _ = self._check_git_changes(session)
+        session.has_uncommitted_changes = has_changes
 
-            if session.status == "dead":
+        if session.status == "dead":
+            with TransactionalStore() as store:
                 store.remove_session(session_id)
 
-            return session
+        return session
 
     def list_sessions(self) -> list[Session]:
         with TransactionalStore() as store:
-            sessions = []
-            dead_ids = []
+            all_sessions = list(store.sessions.values())
 
-            for sid, session in store.sessions.items():
-                status = self._determine_status(session)
-                if status == "dead":
-                    dead_ids.append(sid)
-                else:
-                    session.status = status
-                    has_changes, _ = self._check_git_changes(session)
-                    session.has_uncommitted_changes = has_changes
-                    sessions.append(session)
+        # Determine status outside the lock to avoid blocking on network/subprocess calls
+        sessions = []
+        dead_ids = []
 
-            for dead_id in dead_ids:
-                store.remove_session(dead_id)
+        for session in all_sessions:
+            status = self._determine_status(session)
+            if status == "dead":
+                dead_ids.append(session.id)
+            else:
+                session.status = status
+                has_changes, _ = self._check_git_changes(session)
+                session.has_uncommitted_changes = has_changes
+                sessions.append(session)
 
-            return sessions
+        if dead_ids:
+            with TransactionalStore() as store:
+                for dead_id in dead_ids:
+                    store.remove_session(dead_id)
+
+        return sessions
 
     def cleanup_idle(self, max_idle_seconds: int = 60) -> list[str]:
         stopped = []
@@ -397,7 +403,7 @@ class OpenCodeRunner:
 
             # Parse output - each line is a changed file
             changed_files = []
-            for line in result.stdout.strip().split("\n"):
+            for line in result.stdout.rstrip("\n").split("\n"):
                 if line:
                     # Format: "XY filename" where X/Y are status codes
                     # Extract just the filename (skip first 3 chars: status + space)
@@ -405,7 +411,7 @@ class OpenCodeRunner:
 
             return (bool(changed_files), changed_files)
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        except Exception:
             return (False, [])
 
     def has_uncommitted_changes(self, session_id: str) -> tuple[bool, list[str]]:
@@ -418,7 +424,8 @@ class OpenCodeRunner:
             session = store.get_session(session_id)
             if not session:
                 return (False, [])
-            return self._check_git_changes(session)
+
+        return self._check_git_changes(session)
 
     def _determine_status(self, session: Session) -> str:
         """Determine the actual status of a session.
@@ -456,6 +463,6 @@ class OpenCodeRunner:
 
             return "idle"
 
-        except (OpenCodeClientError, Exception):
+        except Exception:
             # If we can't connect to the server, mark as error
             return "error"

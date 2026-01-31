@@ -86,8 +86,12 @@ class Store:
             json.dump(data, f, indent=2)
 
     def allocate_port(self) -> int:
-        port = self.next_port
-        self.next_port += 1
+        used_ports = {s.port for s in self.sessions.values()}
+        port = 9100
+        while port in used_ports:
+            port += 1
+        if port >= self.next_port:
+            self.next_port = port + 1
         return port
 
     def add_session(self, session: Session) -> None:

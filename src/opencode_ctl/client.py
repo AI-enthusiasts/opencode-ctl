@@ -20,7 +20,8 @@ class Permission:
     id: str
     permission: str
     patterns: list[str]
-    tool_name: str
+    tool_call_id: str = ""
+    tool_message_id: str = ""
 
 
 @dataclass
@@ -133,17 +134,22 @@ class OpenCodeClient:
 
         return session_id
 
+    def get_session_status(self) -> dict[str, dict]:
+        """Get status of all sessions via /session/status endpoint.
+
+        Returns dict mapping session_id to status info like {"type": "idle"|"busy"|"retry"}.
+        """
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{self.base_url}/session/status")
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+            return resp.json()
+
     def is_session_busy(self, session_id: str) -> bool:
-        """Check if session is currently processing (last message is from user or assistant with no text)."""
-        messages = self.get_messages(session_id, limit=1)
-        if not messages:
-            return True
-        last = messages[-1]
-        if last.role == "user":
-            return True
-        if last.role == "assistant" and not last.text.strip():
-            return True
-        return False
+        """Check if session is currently processing via /session/status endpoint."""
+        statuses = self.get_session_status()
+        status = statuses.get(session_id, {})
+        return status.get("type") in ("busy", "retry")
 
     def get_last_assistant_message(self, session_id: str) -> Optional[Message]:
         """Get the last assistant message from session."""
@@ -178,7 +184,8 @@ class OpenCodeClient:
                     id=p.get("id", ""),
                     permission=p.get("permission", ""),
                     patterns=p.get("patterns", []),
-                    tool_name=p.get("tool", {}).get("name", ""),
+                    tool_call_id=p.get("tool", {}).get("callID", ""),
+                    tool_message_id=p.get("tool", {}).get("messageID", ""),
                 )
                 for p in resp.json()
             ]
