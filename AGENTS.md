@@ -29,7 +29,7 @@ src/opencode_ctl/
 - OpenCode sessions: `ses_*` format (internal, from API)
 
 ## Ports
-- Allocated sequentially from 9100 via `store.allocate_port()`
+- Allocated from 9100, reusing freed ports via `store.allocate_port()`
 - Stored in `~/.local/share/opencode-ctl/store.json`
 
 ## HTTP client
@@ -51,6 +51,14 @@ if agent:
 - Don't create httpx.Client without timeout
 
 See `docs/opencode-api.md` for OpenCode HTTP API reference.
+
+# Testing
+
+- Run tests: `uv run pytest tests/ -v`
+- Shared fixtures in `tests/conftest.py`: `make_session()`, `tmp_store`, `mock_httpx_client()`, `mock_response()`, `mock_stream_response()`
+- Each test file imports helpers from `tests.conftest`
+- Use `OCCTL_DATA_DIR` env var (via `monkeypatch.setenv`) to isolate store per test
+- Mock `httpx.Client` via `patch("httpx.Client")`, not respx
 
 ## Landing the Plane (Session Completion)
 

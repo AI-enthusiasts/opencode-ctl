@@ -64,12 +64,10 @@ class OpenCodeRunner:
 
             env["OPENCODE_SESSION_ID"] = session_id
 
-            # Configure OPENCODE_BLACKLIST for occtl commands
             if not allow_occtl_commands:
                 existing_blacklist = env.get("OPENCODE_BLACKLIST", "")
                 occtl_block = "bash:occtl"
                 if existing_blacklist:
-                    # Append to existing blacklist if not already present
                     if occtl_block not in existing_blacklist:
                         env["OPENCODE_BLACKLIST"] = (
                             f"{existing_blacklist},{occtl_block}"
@@ -383,13 +381,11 @@ class OpenCodeRunner:
         if not os.path.isdir(workdir):
             return (False, [])
 
-        # Check if directory is a git repository
         git_dir = os.path.join(workdir, ".git")
         if not os.path.isdir(git_dir):
             return (False, [])
 
         try:
-            # Run git status --porcelain to get uncommitted changes
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=workdir,
@@ -401,12 +397,10 @@ class OpenCodeRunner:
             if result.returncode != 0:
                 return (False, [])
 
-            # Parse output - each line is a changed file
             changed_files = []
             for line in result.stdout.rstrip("\n").split("\n"):
                 if line:
-                    # Format: "XY filename" where X/Y are status codes
-                    # Extract just the filename (skip first 3 chars: status + space)
+                    # git porcelain format: "XY filename" — skip 3-char status prefix
                     changed_files.append(line[3:] if len(line) > 3 else line)
 
             return (bool(changed_files), changed_files)
@@ -443,12 +437,10 @@ class OpenCodeRunner:
         try:
             client = OpenCodeClient(f"http://localhost:{session.port}")
 
-            # Check for pending permissions first
             permissions = client.list_permissions()
             if permissions:
                 return "waiting_permission"
 
-            # Check if any OpenCode session is busy
             oc_sessions = client.list_oc_sessions()
             if not oc_sessions:
                 return "idle"
@@ -456,7 +448,6 @@ class OpenCodeRunner:
             # Consider session busy only if updated recently (within last 10 seconds)
             now_ms = int(time.time() * 1000)
             for oc_sess in oc_sessions:
-                # Check if session was updated recently (less than 10 seconds ago)
                 if oc_sess.updated and (now_ms - oc_sess.updated) < 10_000:
                     if client.is_session_busy(oc_sess.id):
                         return "running"
@@ -464,5 +455,4 @@ class OpenCodeRunner:
             return "idle"
 
         except Exception:
-            # If we can't connect to the server, mark as error
             return "error"

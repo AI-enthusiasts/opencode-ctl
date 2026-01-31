@@ -14,44 +14,19 @@ from opencode_ctl.runner import (
     SessionNotFoundError,
     SessionNotRunningError,
 )
-from opencode_ctl.store import Session, TransactionalStore
+from opencode_ctl.store import TransactionalStore
 from opencode_ctl.client import SendResult, Message, Permission, SessionInfo
+from tests.conftest import make_session
 
 
-@pytest.fixture
-def tmp_store(tmp_path, monkeypatch):
-    monkeypatch.setenv("OCCTL_DATA_DIR", str(tmp_path))
-    return tmp_path
-
-
-def _make_session(
-    id: str = "oc-test1234",
-    port: int = 9100,
-    pid: int = 99999,
-    status: str = "running",
-    config_path: str | None = "/tmp/test",
-    agent: str | None = None,
-) -> Session:
-    return Session(
-        id=id,
-        port=port,
-        pid=pid,
-        created_at=datetime.now().isoformat(),
-        last_activity=datetime.now().isoformat(),
-        config_path=config_path,
-        status=status,
-        agent=agent,
-    )
-
-
-def _store_session(session: Session, tmp_store) -> None:
+def _store_session(session, tmp_store) -> None:
     with TransactionalStore() as store:
         store.add_session(session)
 
 
 class TestStop:
     def test_stop_existing_session(self, tmp_store):
-        session = _make_session(pid=os.getpid())
+        session = make_session(pid=os.getpid())
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -69,7 +44,7 @@ class TestStop:
         assert result is False
 
     def test_force_stop_sends_sigkill(self, tmp_store):
-        session = _make_session(pid=os.getpid())
+        session = make_session(pid=os.getpid())
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -78,7 +53,7 @@ class TestStop:
             mock_kill.assert_called_once_with(os.getpid(), signal.SIGKILL)
 
     def test_stop_handles_dead_process(self, tmp_store):
-        session = _make_session(pid=99999999)
+        session = make_session(pid=99999999)
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -96,7 +71,7 @@ class TestStatus:
         assert runner.status("oc-nonexistent") is None
 
     def test_dead_session_removed_from_store(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -109,7 +84,7 @@ class TestStatus:
             assert store.get_session(session.id) is None
 
     def test_running_session_with_permissions(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -133,8 +108,8 @@ class TestListSessions:
         assert runner.list_sessions() == []
 
     def test_filters_dead_sessions(self, tmp_store):
-        alive = _make_session("oc-alive", port=9100, pid=1)
-        dead = _make_session("oc-dead", port=9101, pid=2)
+        alive = make_session("oc-alive", port=9100, pid=1)
+        dead = make_session("oc-dead", port=9101, pid=2)
         _store_session(alive, tmp_store)
         _store_session(dead, tmp_store)
 
@@ -163,7 +138,7 @@ class TestListSessions:
 class TestCleanupIdle:
     def test_kills_idle_sessions(self, tmp_store):
         old_time = (datetime.now() - timedelta(seconds=120)).isoformat()
-        session = _make_session()
+        session = make_session()
         session.last_activity = old_time
         _store_session(session, tmp_store)
 
@@ -174,7 +149,7 @@ class TestCleanupIdle:
             mock_kill.assert_called_once()
 
     def test_keeps_active_sessions(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         session.last_activity = datetime.now().isoformat()
         _store_session(session, tmp_store)
 
@@ -185,8 +160,7 @@ class TestCleanupIdle:
 
 class TestTouch:
     def test_updates_activity(self, tmp_store):
-        session = _make_session()
-        session.last_activity = "2020-01-01T00:00:00"
+        session = make_session(last_activity="2020-01-01T00:00:00")
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -194,6 +168,7 @@ class TestTouch:
 
         with TransactionalStore() as store:
             s = store.get_session(session.id)
+            assert s is not None
             assert s.last_activity != "2020-01-01T00:00:00"
 
     def test_returns_false_for_missing(self, tmp_store):
@@ -203,7 +178,7 @@ class TestTouch:
 
 class TestSend:
     def test_creates_new_oc_session_and_sends(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -226,7 +201,7 @@ class TestSend:
             mock_client.send_message.assert_called_once_with("ses_new", "hello", None)
 
     def test_async_send_returns_session_id(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -251,7 +226,7 @@ class TestSend:
             runner.send("oc-nonexistent", "hello")
 
     def test_raises_for_dead_session(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -262,7 +237,7 @@ class TestSend:
 
 class TestGetSessionChain:
     def test_builds_parent_chain_and_children(self, tmp_store):
-        session = _make_session()
+        session = make_session()
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -312,17 +287,17 @@ class TestGetSessionChain:
 class TestCheckGitChanges:
     def test_no_config_path(self, tmp_store):
         runner = OpenCodeRunner()
-        session = _make_session(config_path=None)
+        session = make_session(config_path=None)
         assert runner._check_git_changes(session) == (False, [])
 
     def test_nonexistent_directory(self, tmp_store):
         runner = OpenCodeRunner()
-        session = _make_session(config_path="/nonexistent/path")
+        session = make_session(config_path="/nonexistent/path")
         assert runner._check_git_changes(session) == (False, [])
 
     def test_not_git_repo(self, tmp_path):
         runner = OpenCodeRunner()
-        session = _make_session(config_path=str(tmp_path))
+        session = make_session(config_path=str(tmp_path))
         assert runner._check_git_changes(session) == (False, [])
 
     def test_clean_repo(self, tmp_path):
@@ -330,7 +305,7 @@ class TestCheckGitChanges:
         git_dir.mkdir()
 
         runner = OpenCodeRunner()
-        session = _make_session(config_path=str(tmp_path))
+        session = make_session(config_path=str(tmp_path))
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
@@ -343,7 +318,7 @@ class TestCheckGitChanges:
         git_dir.mkdir()
 
         runner = OpenCodeRunner()
-        session = _make_session(config_path=str(tmp_path))
+        session = make_session(config_path=str(tmp_path))
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -361,7 +336,7 @@ class TestHasUncommittedChanges:
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
 
-        session = _make_session(config_path=str(tmp_path))
+        session = make_session(config_path=str(tmp_path))
         _store_session(session, tmp_store)
 
         runner = OpenCodeRunner()
@@ -374,13 +349,13 @@ class TestHasUncommittedChanges:
 class TestDetermineStatus:
     def test_dead_process(self, tmp_store):
         runner = OpenCodeRunner()
-        session = _make_session()
+        session = make_session()
         with patch.object(runner, "_is_process_alive", return_value=False):
             assert runner._determine_status(session) == "dead"
 
     def test_error_on_connection_failure(self, tmp_store):
         runner = OpenCodeRunner()
-        session = _make_session()
+        session = make_session()
         with (
             patch.object(runner, "_is_process_alive", return_value=True),
             patch(
@@ -392,7 +367,7 @@ class TestDetermineStatus:
 
     def test_idle_when_no_sessions(self, tmp_store):
         runner = OpenCodeRunner()
-        session = _make_session()
+        session = make_session()
         mock_client = MagicMock()
         mock_client.list_permissions.return_value = []
         mock_client.list_oc_sessions.return_value = []
