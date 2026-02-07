@@ -316,3 +316,189 @@ class TestVersionCommand:
         with patch("opencode_ctl.cli.get_version", return_value="0.4.0"):
             result = cli.invoke(app, ["version"])
             assert "0.4.0" in result.output
+
+
+class TestConfigCommand:
+    def test_shows_permission_rules(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {
+                    "bash": {
+                        "*": "allow",
+                        "sed -i *": "deny",
+                        "tee *": "deny",
+                    }
+                },
+                "agent": {},
+                "tools": {},
+            }
+            result = cli.invoke(app, ["config", "oc-abc"])
+            assert result.exit_code == 0
+            assert "Permission Rules" in result.output
+            assert "deny" in result.output
+            assert "sed -i *" in result.output
+
+    def test_shows_agent_config(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {},
+                "agent": {
+                    "serena-dev": {
+                        "model": "anthropic/claude-opus-4",
+                        "permission": {"edit": "deny"},
+                    }
+                },
+                "tools": {},
+            }
+            result = cli.invoke(app, ["config", "oc-abc"])
+            assert result.exit_code == 0
+            assert "serena-dev" in result.output
+            assert "anthropic/claude-opus-4" in result.output
+
+    def test_json_output(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {"bash": {"*": "allow"}},
+                "agent": {},
+                "tools": {},
+            }
+            result = cli.invoke(app, ["config", "oc-abc", "--json"])
+            assert result.exit_code == 0
+            assert '"permission"' in result.output
+            assert '"allow"' in result.output
+
+    def test_section_filter(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {"bash": {"*": "allow"}},
+                "agent": {"build": {"model": "test"}},
+                "tools": {"bash": True},
+            }
+            result = cli.invoke(app, ["config", "oc-abc", "permission"])
+            assert result.exit_code == 0
+            assert "Permission Rules" in result.output
+            assert "Agent" not in result.output
+
+    def test_error_handling(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.side_effect = SessionNotFoundError("oc-bad")
+            result = cli.invoke(app, ["config", "oc-bad"])
+            assert result.exit_code == 1
+
+
+class TestTestPermissionCommand:
+    def test_allow(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {
+                    "bash": {
+                        "*": "allow",
+                    }
+                },
+                "agent": {},
+            }
+            result = cli.invoke(app, ["test-permission", "oc-abc", "ls -la"])
+            assert result.exit_code == 0
+            assert "allow" in result.output
+
+    def test_deny(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {
+                    "bash": {
+                        "*": "allow",
+                        "sed -i *": "deny",
+                    }
+                },
+                "agent": {},
+            }
+            result = cli.invoke(
+                app, ["test-permission", "oc-abc", "sed -i 's/a/b/' file.txt"]
+            )
+            assert result.exit_code == 0
+            assert "deny" in result.output
+
+    def test_findlast_order(self):
+        """Last matching rule wins (findLast semantics)."""
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {
+                    "bash": {
+                        "*": "deny",
+                        "ls *": "allow",
+                    }
+                },
+                "agent": {},
+            }
+            result = cli.invoke(app, ["test-permission", "oc-abc", "ls -la"])
+            assert result.exit_code == 0
+            assert "allow" in result.output
+
+    def test_agent_override(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {
+                    "bash": {
+                        "*": "deny",
+                    }
+                },
+                "agent": {
+                    "build": {
+                        "permission": {
+                            "bash": "allow",
+                        }
+                    }
+                },
+            }
+            result = cli.invoke(
+                app, ["test-permission", "oc-abc", "ls -la", "--agent", "build"]
+            )
+            assert result.exit_code == 0
+            assert "allow" in result.output
+
+    def test_no_matching_rule(self):
+        with patch("opencode_ctl.cli.runner") as mock_runner:
+            mock_runner.get_config.return_value = {
+                "permission": {},
+                "agent": {},
+            }
+            result = cli.invoke(app, ["test-permission", "oc-abc", "ls -la"])
+            assert result.exit_code == 0
+            assert "No matching rule" in result.output
+
+
+class TestLogsCommand:
+    def test_no_log_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "os.path.expanduser", lambda x: str(tmp_path / "nonexistent")
+        )
+        # logs command uses os inside function, need to patch at module level
+        with patch("opencode_ctl.cli.os") as mock_os:
+            mock_os.path.isdir.return_value = False
+            mock_os.path.expanduser.return_value = str(tmp_path / "nonexistent")
+            result = cli.invoke(app, ["logs"])
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+    def test_shows_latest_log(self, tmp_path):
+        log_dir = tmp_path / "log"
+        log_dir.mkdir()
+        (log_dir / "2026-01-01.log").write_text("line1\nline2\n")
+        (log_dir / "2026-01-02.log").write_text("latest line\n")
+
+        with patch("opencode_ctl.cli.os") as mock_os:
+            mock_os.path.isdir.return_value = True
+            mock_os.path.expanduser.return_value = str(log_dir)
+            mock_os.listdir.return_value = ["2026-01-01.log", "2026-01-02.log"]
+            mock_os.path.join = (
+                lambda *args: str(log_dir / args[-1])
+                if len(args) == 2
+                else "/".join(args)
+            )
+            mock_os.path.basename.return_value = "2026-01-02.log"
+
+            with patch("opencode_ctl.cli.subprocess") as mock_sub:
+                mock_sub.run.return_value = type("R", (), {"stdout": "latest line\n"})()
+                result = cli.invoke(app, ["logs"])
+                assert result.exit_code == 0
+                assert "latest line" in result.output

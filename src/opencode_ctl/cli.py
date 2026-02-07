@@ -1,6 +1,8 @@
 from importlib.metadata import version as get_version
 from typing import Optional
+import fnmatch
 import json
+import os
 import subprocess
 
 import typer
@@ -590,6 +592,298 @@ def tail(
 
     except Exception as e:
         _handle_session_error(e)
+
+
+@app.command()
+def config(
+    session_id: str = typer.Argument(..., help="occtl session ID"),
+    section: Optional[str] = typer.Argument(
+        None, help="Section to show: permission, agent, tools, all (default: all)"
+    ),
+    as_json: bool = typer.Option(False, "--json", "-j", help="Output raw JSON"),
+):
+    """Show resolved OpenCode configuration (permissions, agents, tools)."""
+    try:
+        cfg = runner.get_config(session_id)
+        section_name = section or "all"
+
+        if as_json:
+            if section_name == "all":
+                data = {
+                    "permission": cfg.get("permission", {}),
+                    "agent": cfg.get("agent", {}),
+                    "tools": cfg.get("tools", {}),
+                }
+            else:
+                data = cfg.get(section_name, {})
+            console.print(json.dumps(data, indent=2))
+            return
+
+        if section_name in ("all", "permission"):
+            permission = cfg.get("permission", {})
+            if permission:
+                table = Table(title="Permission Rules")
+                table.add_column("Permission", style="cyan")
+                table.add_column("Pattern")
+                table.add_column("Action")
+
+                for key, value in permission.items():
+                    if key.startswith("__"):
+                        continue
+                    if isinstance(value, dict):
+                        for pattern, action in value.items():
+                            color = {
+                                "allow": "green",
+                                "deny": "red",
+                                "ask": "yellow",
+                            }.get(str(action), "white")
+                            table.add_row(key, pattern, f"[{color}]{action}[/{color}]")
+                    else:
+                        color = {"allow": "green", "deny": "red", "ask": "yellow"}.get(
+                            str(value), "white"
+                        )
+                        table.add_row("*", key, f"[{color}]{value}[/{color}]")
+
+                console.print(table)
+            else:
+                console.print("[dim]No permission rules[/dim]")
+
+        if section_name in ("all", "agent"):
+            agents = cfg.get("agent", {})
+            if agents:
+                console.print()
+                table = Table(title="Agent Configuration")
+                table.add_column("Agent", style="cyan")
+                table.add_column("Model")
+                table.add_column("Permission overrides")
+
+                for name, agent_cfg in sorted(agents.items()):
+                    if not isinstance(agent_cfg, dict):
+                        continue
+                    model = agent_cfg.get("model", "—")
+                    perms = agent_cfg.get("permission", {})
+                    perm_str = (
+                        ", ".join(f"{k}={v}" for k, v in perms.items())
+                        if perms
+                        else "—"
+                    )
+                    table.add_row(name, str(model), perm_str)
+
+                console.print(table)
+
+        if section_name in ("all", "tools"):
+            tools = cfg.get("tools", {})
+            if tools:
+                console.print()
+                table = Table(title="Tool Overrides")
+                table.add_column("Tool", style="cyan")
+                table.add_column("Enabled")
+
+                for name, enabled in sorted(tools.items()):
+                    color = "green" if enabled else "red"
+                    table.add_row(name, f"[{color}]{enabled}[/{color}]")
+
+                console.print(table)
+
+    except Exception as e:
+        _handle_session_error(e)
+
+
+@app.command(name="test-permission")
+def test_permission(
+    session_id: str = typer.Argument(..., help="occtl session ID"),
+    command: str = typer.Argument(..., help="Bash command to test"),
+    agent: Optional[str] = typer.Option(
+        None, "--agent", "-a", help="Agent name (uses agent-specific rules)"
+    ),
+):
+    """Test if a bash command would be allowed by permission rules."""
+    try:
+        cfg = runner.get_config(session_id)
+        permission = cfg.get("permission", {})
+
+        # Build flat rule list from permission config (same as OpenCode's fromConfig)
+        rules: list[dict] = []
+        for perm_name, value in permission.items():
+            if perm_name.startswith("__"):
+                continue
+            if isinstance(value, dict):
+                for pattern, action in value.items():
+                    rules.append(
+                        {"permission": perm_name, "pattern": pattern, "action": action}
+                    )
+            else:
+                rules.append({"permission": perm_name, "pattern": "*", "action": value})
+
+        # If agent specified, merge agent-specific rules
+        if agent:
+            agents = cfg.get("agent", {})
+            agent_cfg = agents.get(agent, {})
+            if isinstance(agent_cfg, dict):
+                agent_perms = agent_cfg.get("permission", {})
+                for perm_name, value in agent_perms.items():
+                    if isinstance(value, dict):
+                        for pattern, action in value.items():
+                            rules.append(
+                                {
+                                    "permission": perm_name,
+                                    "pattern": pattern,
+                                    "action": action,
+                                }
+                            )
+                    else:
+                        rules.append(
+                            {"permission": perm_name, "pattern": "*", "action": value}
+                        )
+
+        # findLast: find last matching rule (same as OpenCode's evaluate)
+        matched_rule = None
+        for rule in reversed(rules):
+            if _wildcard_match("bash", rule["permission"]) and _wildcard_match(
+                command, rule["pattern"]
+            ):
+                matched_rule = rule
+                break
+
+        if matched_rule is None:
+            console.print(f"[yellow]⚠ No matching rule[/yellow] for: {command}")
+            console.print("[dim]Default: ask[/dim]")
+        elif matched_rule["action"] == "allow":
+            console.print(f"[green]✅ allow[/green] — {command}")
+            console.print(
+                f"[dim]Matched: {matched_rule['permission']}:{matched_rule['pattern']} → {matched_rule['action']}[/dim]"
+            )
+        elif matched_rule["action"] == "deny":
+            console.print(f"[red]🚫 deny[/red] — {command}")
+            console.print(
+                f"[dim]Matched: {matched_rule['permission']}:{matched_rule['pattern']} → {matched_rule['action']}[/dim]"
+            )
+        else:
+            console.print(f"[yellow]❓ {matched_rule['action']}[/yellow] — {command}")
+            console.print(
+                f"[dim]Matched: {matched_rule['permission']}:{matched_rule['pattern']} → {matched_rule['action']}[/dim]"
+            )
+
+    except Exception as e:
+        _handle_session_error(e)
+
+
+def _wildcard_match(text: str, pattern: str) -> bool:
+    """Match text against a wildcard pattern (supports * and ?).
+
+    Implements the same logic as OpenCode's Wildcard.match.
+    """
+    if pattern == "*":
+        return True
+
+    # Convert wildcard pattern to a simple matcher
+    return fnmatch.fnmatch(text, pattern)
+
+
+@app.command()
+def logs(
+    pattern: Optional[str] = typer.Argument(None, help="Search pattern (grep)"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow latest log file"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+    level: Optional[str] = typer.Option(
+        None, "--level", "-l", help="Filter by level: error, warn, info, debug"
+    ),
+    all_files: bool = typer.Option(
+        False, "--all", "-a", help="Search all log files (not just latest)"
+    ),
+):
+    """Search OpenCode logs."""
+    log_dir = os.path.expanduser("~/.local/share/opencode/log")
+    if not os.path.isdir(log_dir):
+        console.print(f"[red]Log directory not found:[/red] {log_dir}")
+        raise typer.Exit(1)
+
+    log_files = sorted(
+        [os.path.join(log_dir, f) for f in os.listdir(log_dir) if f.endswith(".log")]
+    )
+
+    if not log_files:
+        console.print("[yellow]No log files found[/yellow]")
+        raise typer.Exit(1)
+
+    if follow:
+        latest = log_files[-1]
+        console.print(f"[dim]Following: {latest}[/dim]")
+        try:
+            subprocess.run(["tail", "-f", latest])
+        except KeyboardInterrupt:
+            pass
+        return
+
+    target_files = log_files if all_files else [log_files[-1]]
+
+    if pattern or level:
+        grep_patterns = []
+        if pattern:
+            grep_patterns.append(pattern)
+        if level:
+            grep_patterns.append(f"level={level.upper()}")
+
+        for log_file in target_files:
+            try:
+                cmd = ["grep", "-i"]
+                if len(grep_patterns) == 1:
+                    cmd.extend([grep_patterns[0], log_file])
+                else:
+                    # Multiple patterns: use grep pipeline
+                    cmd.extend([grep_patterns[0], log_file])
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                output = result.stdout
+
+                # Apply second pattern filter if needed
+                if len(grep_patterns) > 1 and output:
+                    result2 = subprocess.run(
+                        ["grep", "-i", grep_patterns[1]],
+                        input=output,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    output = result2.stdout
+
+                if output:
+                    if all_files:
+                        console.print(
+                            f"\n[dim]── {os.path.basename(log_file)} ──[/dim]"
+                        )
+                    lines_list = output.strip().split("\n")
+                    for line in lines_list[-lines:]:
+                        # Colorize log levels
+                        if "level=ERROR" in line or "level=error" in line:
+                            console.print(f"[red]{line}[/red]")
+                        elif "level=WARN" in line or "level=warn" in line:
+                            console.print(f"[yellow]{line}[/yellow]")
+                        else:
+                            console.print(line)
+            except subprocess.TimeoutExpired:
+                console.print(f"[yellow]Timeout searching {log_file}[/yellow]")
+    else:
+        # No pattern: show tail of latest log
+        latest = target_files[-1]
+        console.print(f"[dim]{os.path.basename(latest)}[/dim]\n")
+        try:
+            result = subprocess.run(
+                ["tail", f"-{lines}", latest],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.stdout:
+                for line in result.stdout.strip().split("\n"):
+                    if "level=ERROR" in line or "level=error" in line:
+                        console.print(f"[red]{line}[/red]")
+                    elif "level=WARN" in line or "level=warn" in line:
+                        console.print(f"[yellow]{line}[/yellow]")
+                    else:
+                        console.print(line)
+        except subprocess.TimeoutExpired:
+            console.print("[yellow]Timeout reading log[/yellow]")
 
 
 @app.command()

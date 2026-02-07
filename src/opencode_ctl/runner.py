@@ -271,6 +271,12 @@ class OpenCodeRunner:
             raise SessionNotFoundError(f"No OpenCode sessions in {session_id}")
         return max(sessions, key=lambda s: s.updated)
 
+    def get_config(self, session_id: str) -> dict:
+        """Get resolved OpenCode configuration from a running session."""
+        session = self._get_running_session(session_id)
+        client = OpenCodeClient(f"http://localhost:{session.port}")
+        return client.get_config()
+
     def get_session_chain(
         self, session_id: str, oc_session_id: str
     ) -> list[SessionInfo]:

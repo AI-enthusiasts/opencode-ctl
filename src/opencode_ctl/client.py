@@ -306,3 +306,11 @@ class OpenCodeClient:
                 )
 
             return messages
+
+    def get_config(self) -> dict[str, Any]:
+        """Get the resolved OpenCode configuration."""
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{self.base_url}/config")
+            if resp.status_code != 200:
+                raise OpenCodeClientError(resp.status_code, resp.text)
+            return resp.json()
