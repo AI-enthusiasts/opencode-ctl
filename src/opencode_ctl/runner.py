@@ -264,6 +264,13 @@ class OpenCodeRunner:
         client = OpenCodeClient(f"http://localhost:{session.port}")
         return client.get_session(oc_session_id)
 
+    def get_latest_oc_session(self, session_id: str) -> SessionInfo:
+        """Get the most recently updated OpenCode session."""
+        sessions = self.list_oc_sessions(session_id)
+        if not sessions:
+            raise SessionNotFoundError(f"No OpenCode sessions in {session_id}")
+        return max(sessions, key=lambda s: s.updated)
+
     def get_session_chain(
         self, session_id: str, oc_session_id: str
     ) -> list[SessionInfo]:

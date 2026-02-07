@@ -29,6 +29,14 @@ def _handle_session_error(e: Exception) -> None:
     raise typer.Exit(1)
 
 
+def _resolve_oc_session(session_id: str, oc_session: str | None) -> str:
+    """Resolve OpenCode session ID: use provided or auto-detect latest."""
+    if oc_session:
+        return oc_session
+    latest = runner.get_latest_oc_session(session_id)
+    return latest.id
+
+
 @app.command()
 def start(
     workdir: Optional[str] = typer.Option(
@@ -332,10 +340,13 @@ def sessions(session_id: str = typer.Argument(..., help="occtl session ID")):
 @app.command()
 def chain(
     session_id: str = typer.Argument(..., help="occtl session ID"),
-    oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),
+    oc_session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="OpenCode session ID (default: latest)"
+    ),
 ):
     """Show session chain (parent sessions from compaction)"""
     try:
+        oc_session = _resolve_oc_session(session_id, oc_session)
         chain_sessions = runner.get_session_chain(session_id, oc_session)
         if not chain_sessions:
             console.print("[dim]No chain found[/dim]")
@@ -372,8 +383,8 @@ def chain(
 @app.command()
 def fork(
     session_id: str = typer.Argument(..., help="occtl session ID"),
-    oc_session: str = typer.Option(
-        ..., "--session", "-s", help="OpenCode session ID to fork"
+    oc_session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="OpenCode session ID to fork (default: latest)"
     ),
     message_id: Optional[str] = typer.Option(
         None, "--message", "-m", help="Fork up to (not including) this message ID"
@@ -381,6 +392,7 @@ def fork(
 ):
     """Fork an OpenCode session, creating a copy of its conversation history."""
     try:
+        oc_session = _resolve_oc_session(session_id, oc_session)
         forked = runner.fork_session(session_id, oc_session, message_id)
         console.print(f"[green]Forked:[/green] {forked.id}")
         if forked.parent_id:
@@ -392,7 +404,9 @@ def fork(
 @app.command()
 def tail(
     session_id: str = typer.Argument(..., help="occtl session ID"),
-    oc_session: str = typer.Option(..., "--session", "-s", help="OpenCode session ID"),
+    oc_session: Optional[str] = typer.Option(
+        None, "--session", "-s", help="OpenCode session ID (default: latest)"
+    ),
     follow: bool = typer.Option(False, "--follow", "-f", help="Wait for completion"),
     last: bool = typer.Option(
         False, "--last", "-l", help="Only show last assistant message"
@@ -431,6 +445,7 @@ def tail(
     ),
 ):
     try:
+        oc_session = _resolve_oc_session(session_id, oc_session)
 
         def filter_messages(msgs: list) -> list:
             result = msgs
